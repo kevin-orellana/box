@@ -16,7 +16,9 @@ policy  = "policy.dw"
 [agent]
 command = ["__AGENT_COMMAND__"]
 workspace = "__WORKSPACE__"
-env = { AWS_REGION = "us-west-2", CLAUDE_CODE_USE_BEDROCK = "1", IS_SANDBOX = "1", CLAUDE_CODE_TMPDIR = "__WORKSPACE__/.tmp", CLAUDE_CONFIG_DIR = "__WORKSPACE__/.claude-config" }
+env = { AWS_REGION = "us-west-2", CLAUDE_CODE_USE_BEDROCK = "1", ANTHROPIC_MODEL = "us.anthropic.claude-opus-5-5", IS_SANDBOX = "1", CLAUDE_CODE_TMPDIR = "__WORKSPACE__/.tmp", CLAUDE_CONFIG_DIR = "__WORKSPACE__/.claude-config" }
+# ANTHROPIC_MODEL: pinned so a Claude Code default shifting under the suite cannot
+# look like a containment regression. The id is a us-west-2 inference profile.
 # IS_SANDBOX: Claude Code accepts --dangerously-skip-permissions as root (it is, under SSM)
 # only when it is "1". CLAUDE_CODE_TMPDIR: Claude Code 2.1.276 and later create their
 # scratch directory at /tmp/claude-<uid> and read only this variable to move it; the box
