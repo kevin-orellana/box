@@ -457,7 +457,7 @@ pub(crate) struct HostedBox {
     broker: Option<BrokerHost>,
 
     #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
-    _file_monitor: super::macos_enforcement::FileMonitor,
+    _file_monitor: Option<super::macos_enforcement::FileMonitor>,
 
     /// A fatal cross-door completion verdict from the discovery coordinator,
     /// raced against the broker and the registry in [`stopped`](Self::stopped).
@@ -667,16 +667,22 @@ impl HostedBox {
         });
         let broker_listener = BrokerHost::bind(root)?;
         #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
-        let file_monitor = super::macos_enforcement::FileMonitor::start(
-            Arc::clone(&policy),
-            Arc::clone(&recorder),
-            root.name(),
-            &crate::record::layout::operator_home_directory()?,
-            coordinator_fatal_sender.clone(),
-        )
-        .map_err(|error| crate::error::SuperviseError::Control {
-            reason: format!("macOS file enforcement could not start: {error}"),
-        })?;
+        let file_monitor = if record.experimental_features.native_filesystem_policy {
+            Some(
+                super::macos_enforcement::FileMonitor::start(
+                    Arc::clone(&policy),
+                    Arc::clone(&recorder),
+                    root.name(),
+                    &crate::record::layout::operator_home_directory()?,
+                    coordinator_fatal_sender.clone(),
+                )
+                .map_err(|error| crate::error::SuperviseError::Control {
+                    reason: format!("macOS file enforcement could not start: {error}"),
+                })?,
+            )
+        } else {
+            None
+        };
         let broker = BrokerHost::start(
             broker_listener,
             root,
@@ -808,6 +814,7 @@ mod tests {
     fn record_with_mcp(root: &BoxRoot, mcp: Vec<crate::record::config::mcp::McpServer>) -> Record {
         Record {
             version: crate::record::config::RECORD_VERSION,
+            experimental_features: Default::default(),
             box_id: root.name().to_string(),
             box_dir: root.root().to_path_buf(),
             name: "codex".to_string(),
@@ -1734,6 +1741,7 @@ while :; do :; done"#
         let agent = spec(&["/bin/sh"]);
         Record {
             version: crate::record::config::RECORD_VERSION,
+            experimental_features: Default::default(),
             box_id: "box-0123456789abcdef".to_string(),
             box_dir: PathBuf::from("/var/lib/boxes/probe"),
             name: "probe".to_string(),

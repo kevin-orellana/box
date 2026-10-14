@@ -34,6 +34,8 @@ typedef struct {
 size_t box_es_event_size(void) { return sizeof(box_event); }
 bool box_es_stop(void *raw);
 
+#if defined(__MAC_27_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_27_0
+
 static bool copy_token(char *out, es_string_token_t token) {
     if (!token.data || token.length == 0 || token.length >= BOX_PATH_CAPACITY ||
         memchr(token.data, 0, token.length)) return false;
@@ -221,3 +223,19 @@ bool box_es_stop(void *raw) {
     }
     return false;
 }
+
+#else
+
+void *box_es_start(void *context, box_callback callback, int *error) {
+    (void)context;
+    (void)callback;
+    *error = -5;
+    return NULL;
+}
+
+bool box_es_stop(void *raw) {
+    (void)raw;
+    return false;
+}
+
+#endif

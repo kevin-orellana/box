@@ -442,7 +442,8 @@ impl RunContract {
         }
         Ok(ConfigureRequest {
             record: Record {
-                version: RECORD_VERSION,
+                version: self.file.experimental_features.record_version(),
+                experimental_features: self.file.experimental_features.clone(),
                 box_id: root.box_id().to_string(),
                 box_dir: root.root().to_path_buf(),
                 name: self.file.name.clone(),
@@ -488,6 +489,14 @@ impl ConfigureRequest {
 pub(crate) struct Record {
     /// The record format's version.
     pub(crate) version: u32,
+
+    /// The operator-selected experimental enforcement mechanisms.
+    #[serde(
+        default,
+        rename = "experimental-features",
+        skip_serializing_if = "ExperimentalFeatures::is_disabled"
+    )]
+    pub(crate) experimental_features: ExperimentalFeatures,
 
     /// The immutable identity that Box generated for this directory.
     pub(crate) box_id: String,
@@ -551,6 +560,45 @@ pub(crate) struct Record {
 /// mismatch rather than silently losing containment. Version 16 dropped the credsd `secret.type`
 /// key.
 pub(crate) const RECORD_VERSION: u32 = 21;
+
+/// Version 22 prevents older builds from resuming a box without its selected enforcement.
+const EXPERIMENTAL_RECORD_VERSION: u32 = 22;
+
+/// Experimental mechanisms require explicit operator selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub(crate) struct ExperimentalFeatures {
+    #[serde(default)]
+    pub(crate) native_filesystem_policy: bool,
+}
+
+impl ExperimentalFeatures {
+    fn is_disabled(&self) -> bool {
+        !self.native_filesystem_policy
+    }
+
+    fn record_version(&self) -> u32 {
+        if self.native_filesystem_policy {
+            EXPERIMENTAL_RECORD_VERSION
+        } else {
+            RECORD_VERSION
+        }
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.native_filesystem_policy
+            && !cfg!(all(
+                target_os = "macos",
+                feature = "kernel-policy-integration"
+            ))
+        {
+            return Err(ConfigError::ExperimentalFeatureUnavailable {
+                feature: "native-filesystem-policy",
+            });
+        }
+        Ok(())
+    }
+}
 
 /// A key an earlier build read, and what replaced it.
 struct RemovedKey {
@@ -774,7 +822,7 @@ impl Record {
         // The removed keys are judged first, so an older record that carries one names the key
         // rather than a bare version mismatch.
         refuse_removed_keys(text, path)?;
-        if stamped.version != RECORD_VERSION {
+        if ![RECORD_VERSION, EXPERIMENTAL_RECORD_VERSION].contains(&stamped.version) {
             return Err(ConfigError::RecordVersion {
                 found: stamped.version,
                 expected: RECORD_VERSION,
@@ -785,6 +833,14 @@ impl Record {
             path: path.to_path_buf(),
             source,
         })?;
+        let expected = record.experimental_features.record_version();
+        if record.version != expected {
+            return Err(ConfigError::RecordVersion {
+                found: record.version,
+                expected,
+            });
+        }
+        record.experimental_features.validate()?;
         if !valid_box_identity(&record.box_id) {
             return Err(ConfigError::RecordIdentity {
                 found: record.box_id,
@@ -969,6 +1025,9 @@ pub(crate) fn trailing_arguments(argv: &[OsString]) -> Result<Vec<String>, Confi
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    /// Experimental enforcement, disabled unless the operator selects it.
+    #[serde(default, rename = "experimental-features")]
+    experimental_features: ExperimentalFeatures,
     /// The operator's name for this box, which is one path component.
     name: String,
 
@@ -1042,6 +1101,7 @@ impl ConfigFile {
 
     /// Reject a config no run could honor, before anything is stored.
     fn validate(&self) -> Result<(), ConfigError> {
+        self.experimental_features.validate()?;
         BoxName::parse(&self.name)?;
         if let Some(agent) = &self.agent {
             agent.validate("[agent]")?;
@@ -1143,6 +1203,7 @@ mod tests {
     fn record(agent: Option<ProcessSpec>, egress: BTreeMap<String, EgressEntry>) -> Record {
         Record {
             version: RECORD_VERSION,
+            experimental_features: Default::default(),
             box_id: "box-0123456789abcdef".to_string(),
             box_dir: PathBuf::from("/var/lib/boxes/codex"),
             name: "codex".to_string(),
@@ -1154,6 +1215,80 @@ mod tests {
             mcp: Vec::new(),
             contained_mcp: BTreeMap::new(),
             telemetry: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn experimental_selection_is_explicit_and_strict() {
+        let required = "name = \"codex\"\nbox_dir = \"/var/lib/box\"\n";
+        let absent = ConfigFile::parse(required, Path::new("box.toml")).unwrap();
+        assert!(absent.experimental_features.is_disabled());
+        let disabled = ConfigFile::parse(
+            &format!("{required}[experimental-features]\nnative-filesystem-policy = false\n"),
+            Path::new("box.toml"),
+        )
+        .unwrap();
+        assert!(disabled.experimental_features.is_disabled());
+        assert!(
+            ConfigFile::parse(
+                &format!("{required}[experimental-features]\nnative-filesystem-polic = true\n"),
+                Path::new("box.toml"),
+            )
+            .is_err()
+        );
+        let enabled = ConfigFile::parse(
+            &format!("{required}[experimental-features]\nnative-filesystem-policy = true\n"),
+            Path::new("box.toml"),
+        );
+        if cfg!(all(
+            target_os = "macos",
+            feature = "kernel-policy-integration"
+        )) {
+            assert!(
+                enabled
+                    .unwrap()
+                    .experimental_features
+                    .native_filesystem_policy
+            );
+        } else {
+            assert!(matches!(
+                enabled,
+                Err(ConfigError::ExperimentalFeatureUnavailable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn native_enforcement_cannot_hide_in_a_legacy_record() {
+        let mut ordinary = record(None, BTreeMap::new());
+        let original = toml::to_string(&ordinary).unwrap();
+        assert!(!original.contains("experimental-features"));
+        assert_eq!(
+            Record::parse(&original, Path::new("record.toml")).unwrap(),
+            ordinary
+        );
+        ordinary.experimental_features.native_filesystem_policy = true;
+        let forged = toml::to_string(&ordinary).unwrap();
+        assert!(matches!(
+            Record::parse(&forged, Path::new("record.toml")),
+            Err(ConfigError::RecordVersion {
+                found: RECORD_VERSION,
+                expected: EXPERIMENTAL_RECORD_VERSION
+            })
+        ));
+        ordinary.version = EXPERIMENTAL_RECORD_VERSION;
+        let encoded = toml::to_string(&ordinary).unwrap();
+        let restored = Record::parse(&encoded, Path::new("record.toml"));
+        if cfg!(all(
+            target_os = "macos",
+            feature = "kernel-policy-integration"
+        )) {
+            assert_eq!(restored.unwrap(), ordinary);
+        } else {
+            assert!(matches!(
+                restored,
+                Err(ConfigError::ExperimentalFeatureUnavailable { .. })
+            ));
         }
     }
 
@@ -1215,9 +1350,9 @@ mod tests {
         }
     }
 
-    /// **The file carries eight keys**, and a ninth is a load error rather than an ignored key.
+    /// Unknown keys remain errors when experimental enforcement is available.
     #[test]
-    fn the_config_accepts_the_eight_keys_and_refuses_a_ninth() {
+    fn the_config_accepts_the_nine_keys_and_refuses_unknown_keys() {
         // `name` and `box_dir` are the two required keys, so every accepted spelling carries both.
         let required = "name = \"codex\"\nbox_dir = \"/var/lib/box\"\n";
         for known in [
@@ -1659,7 +1794,7 @@ env = {}
     /// A foreign version refuses, and the refusal names BOTH versions.
     #[test]
     fn a_record_from_another_format_is_refused() {
-        for found in [RECORD_VERSION - 1, RECORD_VERSION + 1] {
+        for found in [RECORD_VERSION - 1, EXPERIMENTAL_RECORD_VERSION + 1] {
             let text = format!("version = {found}\n");
 
             let error = parsed_record(&text).expect_err("a foreign version must be refused");

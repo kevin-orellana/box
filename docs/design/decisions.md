@@ -68,6 +68,27 @@ constrains what the program does.
 
 ## The box
 
+<a id="native-filesystem-policy-requires-explicit-selection"></a>
+### Native filesystem policy requires explicit selection
+
+On October 14, 2026, the operator approved isolation of native filesystem interception under `experimental-features`.
+The `kernel-policy-integration` Cargo feature includes the adapter but does not activate it.
+`[experimental-features] native-filesystem-policy = true` selects it for one box.
+Standard release builds exclude the adapter. Unsupported selections refuse startup before workload execution.
+
+The adapter uses the existing durable policy engine. Benchmark environment switches, memory history, and timers are excluded.
+The directory-entry path resolver remains necessary for rename and unlink checks without following the final symlink.
+This approved native adapter exposes `PathResolver::approve_host_entry` for that purpose.
+
+Disabled configurations retain record version 21 and omit the new field.
+Enabled configurations use version 22, which older binaries reject.
+A version 21 record that enables the feature is invalid.
+Changing this selection does not erase policy history. See [operator instructions](../user/native-filesystem-policy.md).
+
+Signed native tests live in `test-native-filesystem`, a separate package that tests the built product.
+Ordinary workspace tests cover disabled startup, unsupported opt-in, and record compatibility.
+This follows the existing `test-integ` package boundary and preserves every native assertion.
+
 <a id="the-boundary-is-the-surrounding-os-not-a-virtual-machine"></a>
 ### The boundary is the surrounding OS's own sandboxing, and not a virtual machine
 

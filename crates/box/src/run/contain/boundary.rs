@@ -652,6 +652,7 @@ impl Boundary {
             command_listed,
             broad_exec,
             native_egress: launch.egress == EgressMode::Native,
+            native_filesystem_policy: stored.experimental_features.native_filesystem_policy,
         });
 
         // The digest covers the exact bytes written, so the trampoline verifies what this process
@@ -771,14 +772,20 @@ struct DisclosureInputs<'a> {
     command_listed: bool,
     broad_exec: bool,
     native_egress: bool,
+    native_filesystem_policy: bool,
 }
 
 /// The text a box prints for one spec: every grant no policy decision covers, Core's own additions,
 /// and the effective `HOME` and `PATH`.
 fn disclosure(inputs: &DisclosureInputs<'_>) -> String {
     let table = inputs.table;
+    let coverage = if inputs.native_filesystem_policy {
+        "with experimental native policy checks for open, create, unlink, rename, and truncate over these paths"
+    } else {
+        "with no policy decision over these paths"
+    };
     let mut lines = vec![format!(
-        "strands-box: {table} runs {} with no policy decision over these paths:",
+        "strands-box: {table} runs {} {coverage}:",
         inputs.program.display()
     )];
     if inputs.grants.is_empty() {
@@ -1328,6 +1335,7 @@ mod tests {
             }
             let record = Record {
                 version: RECORD_VERSION,
+                experimental_features: Default::default(),
                 box_id: root.name().to_string(),
                 box_dir: root.root().to_path_buf(),
                 name: "codex".to_string(),

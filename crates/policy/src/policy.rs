@@ -230,7 +230,6 @@ impl PolicyEngine {
         principal: &Principal,
         request: &Request<'_>,
     ) -> Decision {
-        let _timer = HistoryBenchTimer::new(&HISTORY_BENCH_DECISIONS, &HISTORY_BENCH_DECIDE_NS);
         let identity = crate::schema::ActionIdentity::for_request(request);
         let decision = self
             .authority
@@ -263,7 +262,6 @@ impl PolicyEngine {
         principal: &Principal,
         outcome: &Outcome<'_>,
     ) -> Result<(), PolicyError> {
-        let _timer = HistoryBenchTimer::new(&HISTORY_BENCH_OUTCOMES, &HISTORY_BENCH_RECORD_NS);
         self.authority.record(governed, principal, outcome)
     }
 
@@ -1148,51 +1146,5 @@ forbid(principal, action == issues_mcp::Action::"read", resource);
                 "no box may map to another resource id"
             );
         }
-    }
-}
-
-static HISTORY_BENCH_DECISIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HISTORY_BENCH_OUTCOMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HISTORY_BENCH_DECIDE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HISTORY_BENCH_RECORD_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-struct HistoryBenchTimer {
-    start: std::time::Instant,
-    count: &'static std::sync::atomic::AtomicU64,
-    duration: &'static std::sync::atomic::AtomicU64,
-}
-
-impl HistoryBenchTimer {
-    fn new(
-        count: &'static std::sync::atomic::AtomicU64,
-        duration: &'static std::sync::atomic::AtomicU64,
-    ) -> Self {
-        Self {
-            start: std::time::Instant::now(),
-            count,
-            duration,
-        }
-    }
-}
-
-impl Drop for HistoryBenchTimer {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.count.fetch_add(1, Relaxed);
-        self.duration
-            .fetch_add(self.start.elapsed().as_nanos() as u64, Relaxed);
-    }
-}
-
-impl Drop for PolicyEngine {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        eprintln!(
-            "BOX_HISTORY_BENCH_TIMERS decisions={} outcomes={} decide_ns={} record_ns={}",
-            HISTORY_BENCH_DECISIONS.load(Relaxed),
-            HISTORY_BENCH_OUTCOMES.load(Relaxed),
-            HISTORY_BENCH_DECIDE_NS.load(Relaxed),
-            HISTORY_BENCH_RECORD_NS.load(Relaxed)
-        );
     }
 }

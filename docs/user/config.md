@@ -68,7 +68,7 @@ An unknown key at any level is a load error.
 
 ## Keys
 
-The file carries eight keys. `name` and `box_dir` are required.
+The file carries nine keys. `name` and `box_dir` are required.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -80,8 +80,10 @@ The file carries eight keys. `name` and `box_dir` are required.
 | `[egress.<name>]` | tables | Which secret attaches to which outbound destination. |
 | `[mcp.<name>]` | tables | The MCP servers this box declares. |
 | `[telemetry.<label>]` | tables | Where this box's decision records and agent spans go. |
+| `[experimental-features]` | table | Optional native filesystem policy checks. Disabled by default. |
 
-The example uses five of the eight: `name`, `box_dir`, `policy`, `[agent]`, and one
+
+The example uses five of the nine: `name`, `box_dir`, `policy`, `[agent]`, and one
 `[egress.<name>]` table. It declares no tool, no MCP server, and no telemetry target.
 
 `name` and `box_dir` are the two required keys. `name` labels the box in its record and its
@@ -105,6 +107,19 @@ its own private tree from inside. It stays until you delete it: end the `run` pr
 and remove the directory after `run` has exited to delete one. Do not remove the directory while
 its `run` is alive: on macOS, the kernel kills a shell or Python call of that box whose program file
 loses a name during its security assessment.
+
+## `[experimental-features]`
+
+Native filesystem policy checks require both a custom build and explicit selection:
+
+```toml
+[experimental-features]
+native-filesystem-policy = true
+```
+
+The default is `false`. Unknown feature names are errors.
+The standard release excludes this experiment. An unsupported build refuses `true` before the workload starts.
+See [native filesystem policy](native-filesystem-policy.md) for build requirements, coverage, and recovery behavior.
 
 ## `[agent]` and `[tool.<name>]`
 

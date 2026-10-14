@@ -457,18 +457,6 @@ impl FileMonitor {
         home: &Path,
         fatal: tokio::sync::mpsc::UnboundedSender<crate::error::BoxError>,
     ) -> io::Result<Self> {
-        if std::env::var("BOX_FS_BENCH").as_deref() == Ok("off") {
-            assert!(
-                std::env::current_exe()
-                    .expect("executable")
-                    .starts_with("/Volumes/workplace/box-history-results-20261014/diagnostic")
-            );
-            eprintln!("BOX_FS_BENCH=off");
-            return Ok(Self {
-                client: std::ptr::null_mut(),
-                context: None,
-            });
-        }
         let mut context = Box::new(Context {
             engine,
             recorder,
@@ -484,8 +472,16 @@ impl FileMonitor {
         let client =
             unsafe { box_es_start((&mut *context as *mut Context).cast(), receive, &mut error) };
         if client.is_null() {
+            let reason = match error {
+                -1 => "macOS 27 or later is required",
+                -2 => "client allocation failed",
+                -3 => "the kernel did not confirm fail-closed deadline handling",
+                -4 => "the kernel did not confirm all required subscriptions",
+                -5 => "this binary requires a rebuild with the macOS 27 SDK or later",
+                _ => "client creation failed; verify the signed Endpoint Security entitlement",
+            };
             return Err(io::Error::other(format!(
-                "Endpoint Security setup returned {error}; requires macOS 27 and a signed Endpoint Security entitlement"
+                "{reason} (Endpoint Security setup code {error})"
             )));
         }
         eprintln!(

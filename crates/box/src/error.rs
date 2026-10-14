@@ -156,6 +156,11 @@ pub(crate) enum RelayError {
 /// The four inputs could not be read, parsed, or validated.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConfigError {
+    #[error(
+        "experimental feature `{feature}` requires a macOS build with `kernel-policy-integration`"
+    )]
+    ExperimentalFeatureUnavailable { feature: &'static str },
+
     #[error("invalid Box configuration: {reason}")]
     Contract { reason: String },
 
