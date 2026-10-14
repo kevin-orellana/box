@@ -109,7 +109,8 @@ const EVENTS_DWSCHEMA: &str = include_str!("../schema/events.dwschema");
 
 /// Open durable history at `path`.
 fn open_history(path: &Path, config: DurableConfig) -> Result<DurableTemporalEngine, DurableError> {
-    let log = DurableLog::open(path).map_err(|error| DurableError::Log(error.to_string()))?;
+    let log =
+        history_benchmark_log(path, path).map_err(|error| DurableError::Log(error.to_string()))?;
     recover_history(log, path.to_path_buf(), config, SNAPSHOT_INTERVAL)
 }
 
@@ -217,7 +218,7 @@ impl DogwoodEngine {
         label: PathBuf,
     ) -> Result<Self, PolicyStagingError> {
         let effective_schema = action_schema(&[])?;
-        let log = DurableLog::open(opened_file_path(&history))
+        let log = history_benchmark_log(&label, &opened_file_path(&history))
             .map_err(|error| PolicyStagingError::Durable(error.to_string()))?;
         drop(history);
         let engine = recover_history(log, label, durable_config(), SNAPSHOT_INTERVAL)
@@ -2247,5 +2248,33 @@ when temporal {
             !recovered.decide(&governed(), &egress, &http()).is_allow(),
             "inserting an unrelated statement must not reset an unchanged budget"
         );
+    }
+}
+
+fn history_benchmark_log(
+    label: &Path,
+    opened_path: &Path,
+) -> Result<DurableLog, dogwood_local_engine::LogError> {
+    let mode = std::env::var("BOX_HISTORY_BENCH").unwrap_or_else(|_| "durable".into());
+    assert!(
+        matches!(mode.as_str(), "durable" | "memory"),
+        "invalid benchmark mode"
+    );
+    if mode == "memory" {
+        assert!(
+            label.starts_with("/Volumes/workplace/bhb14"),
+            "benchmark history directory"
+        );
+        assert!(
+            std::env::current_exe()
+                .expect("executable")
+                .starts_with("/Volumes/workplace/box-history-results-20261014/diagnostic"),
+            "benchmark executable directory"
+        );
+        eprintln!("BOX_HISTORY_BENCH_LOG=memory");
+        DurableLog::ephemeral()
+    } else {
+        eprintln!("BOX_HISTORY_BENCH_LOG=durable");
+        DurableLog::open(opened_path)
     }
 }

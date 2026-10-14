@@ -241,6 +241,32 @@ impl PathResolver {
         self.admit(requested, canonical)
     }
 
+    /// Approve a directory entry without following its final component.
+    pub fn approve_host_entry(&self, requested: &Path) -> Result<ApprovedPath, PathRefusal> {
+        if !requested.is_absolute() {
+            return Err(PathRefusal::NotAbsolute(requested.to_path_buf()));
+        }
+        let parent = requested
+            .parent()
+            .ok_or_else(|| PathRefusal::Unresolvable {
+                path: requested.to_path_buf(),
+                reason: "a directory entry requires a parent".into(),
+            })?;
+        let name = requested
+            .file_name()
+            .ok_or_else(|| PathRefusal::Unresolvable {
+                path: requested.to_path_buf(),
+                reason: "a directory entry requires a name".into(),
+            })?;
+        let canonical = std::fs::canonicalize(parent)
+            .map_err(|error| PathRefusal::Unresolvable {
+                path: requested.to_path_buf(),
+                reason: error.to_string(),
+            })?
+            .join(name);
+        self.admit(requested, canonical)
+    }
+
     /// Approve a path in an interpreter's **virtual** namespace, with no I/O.
     ///
     /// A script path lives in the interpreter's own namespace, and a host
@@ -318,6 +344,27 @@ pub(crate) fn normalize_virtual(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_approval_does_not_follow_a_leaf_link_or_accept_an_aliased_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let resolver = PathResolver::over([root_path.clone()]).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("missing"), root_path.join("leaf")).unwrap();
+        let approved = resolver
+            .approve_host_entry(&root_path.join("leaf"))
+            .unwrap();
+        assert_eq!(approved.as_path(), root_path.join("leaf"));
+        assert!(resolver.approve_host(&root_path.join("leaf")).is_err());
+        std::os::unix::fs::symlink(outside.path(), root_path.join("parent")).unwrap();
+        assert!(
+            resolver
+                .approve_host_entry(&root_path.join("parent/child"))
+                .is_err()
+        );
+        assert!(resolver.approve_host_entry(&root_path.join("new")).is_ok());
+    }
 
     fn resolver(root: &str) -> PathResolver {
         PathResolver::over([PathBuf::from(root)]).expect("an absolute root is accepted")

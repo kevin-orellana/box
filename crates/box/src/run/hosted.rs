@@ -456,6 +456,9 @@ pub(crate) struct HostedBox {
     /// The broker serving this box's aliases.
     broker: Option<BrokerHost>,
 
+    #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+    _file_monitor: super::macos_enforcement::FileMonitor,
+
     /// A fatal cross-door completion verdict from the discovery coordinator,
     /// raced against the broker and the registry in [`stopped`](Self::stopped).
     coordinator_fatal: tokio::sync::mpsc::UnboundedReceiver<BoxError>,
@@ -546,7 +549,7 @@ impl HostedBox {
         let coordinator = DiscoveryCoordinator::new(
             doors,
             Arc::clone(&policy),
-            coordinator_fatal_sender,
+            coordinator_fatal_sender.clone(),
             Some(Arc::clone(&collector)),
         );
 
@@ -662,7 +665,20 @@ impl HostedBox {
                 workspace.to_path_buf(),
             ))
         });
+        let broker_listener = BrokerHost::bind(root)?;
+        #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+        let file_monitor = super::macos_enforcement::FileMonitor::start(
+            Arc::clone(&policy),
+            Arc::clone(&recorder),
+            root.name(),
+            &crate::record::layout::operator_home_directory()?,
+            coordinator_fatal_sender.clone(),
+        )
+        .map_err(|error| crate::error::SuperviseError::Control {
+            reason: format!("macOS file enforcement could not start: {error}"),
+        })?;
         let broker = BrokerHost::start(
+            broker_listener,
             root,
             record,
             workspace,
@@ -670,7 +686,7 @@ impl HostedBox {
             Arc::clone(&policy),
             discovery.registry(),
             egress,
-            recorder,
+            Arc::clone(&recorder),
             host_spawner,
             mcp_leaf_launcher,
             protected_sources,
@@ -680,6 +696,8 @@ impl HostedBox {
         Ok(Self {
             discovery: Some(discovery),
             broker: Some(broker),
+            #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+            _file_monitor: file_monitor,
             coordinator_fatal,
             _proxy: proxy,
             _collector: collector,
