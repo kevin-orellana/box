@@ -50,10 +50,70 @@ Production use still requires further review and tests for those failures.
 
 Disabled configurations retain record version 21. Enabled configurations use version 22.
 Older binaries refuse version 22 rather than silently losing enforcement.
+
 To disable the experiment, change the setting to `false`.
 Run once with the native-capable build before returning to an older binary.
 This writes a version 21 record while retaining durable policy history.
 Changing the setting directly to `false` does not authorize an older binary to parse an existing version 22 record.
+
+## FAQ
+
+### Does this check every file access?
+
+No. The adapter checks the operations listed in [Coverage and limits](#coverage-and-limits).
+A file descriptor is a process's handle to an open file.
+Later reads or writes through that handle can occur without another open request or policy check.
+Changing policy does not revoke existing descriptors.
+
+### Why add policy checks when containment already restricts files?
+
+Containment restricts which paths a process can reach.
+Dogwood adds policy decisions, including rules that depend on prior events.
+Both restrictions apply. A policy permit cannot expand containment grants.
+
+### Can I enable this through TOML alone?
+
+Only if you already have the compatible, signed build described in [Enable the experiment](#enable-the-experiment).
+Standard release artifacts exclude the experiment.
+The Cargo feature includes the adapter in a build.
+The TOML setting activates it for a box.
+
+### What happens if I enable it on an unsupported system?
+
+Box refuses startup before the workload runs or the stored record changes.
+It does not silently disable the selected checks.
+An absent setting or `false` keeps interception disabled.
+
+### Does this change where policy history lives?
+
+No. The adapter uses the box's existing durable Dogwood history, which survives restarts.
+Disabling and re-enabling interception does not erase that history.
+This feature adds no option to keep history only in memory.
+
+### Why disable authorization caching?
+
+The adapter disables kernel authorization caching so intercepted requests receive fresh policy decisions.
+Reusing an earlier decision could miss changes in policy history.
+Repeated checks add processing and storage work.
+Access through an existing descriptor remains subject to the limitation above.
+
+### Does an allow record prove that the operation succeeded?
+
+No. Accepted authorization replies produce `indeterminate` outcomes.
+These records confirm authorization, not successful filesystem effects.
+Do not interpret them as proof that a file operation completed.
+
+### Can detached children survive normal Box shutdown?
+
+The shutdown path terminates tracked descendants, including detached children, before interception stops.
+Descendant cleanup and callback draining share a five-second deadline.
+Tests cover normal detached-child cleanup, but not every shutdown failure or enforcement after the trusted process crashes.
+
+### Can I immediately return to an older binary?
+
+No, if the box has an enabled version 22 record.
+Follow [Stored configuration and rollback](#stored-configuration-and-rollback) before starting an older binary.
+Changing TOML alone does not rewrite the stored record.
 
 ## Validate a signed build
 
