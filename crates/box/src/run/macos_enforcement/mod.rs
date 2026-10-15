@@ -56,6 +56,7 @@ unsafe extern "C" {
         callback: unsafe extern "C" fn(*mut c_void, *const RawEvent, i32) -> bool,
         error: *mut i32,
     ) -> *mut c_void;
+    fn box_es_set_process_mode(client: *mut c_void, pid: i32, mediated: bool) -> bool;
     fn box_es_stop(client: *mut c_void) -> i32;
     #[cfg(test)]
     fn box_es_event_size() -> usize;
@@ -504,8 +505,31 @@ unsafe extern "C" fn receive(context: *mut c_void, event: *const RawEvent, statu
     })
 }
 
+struct Client(*mut c_void);
+// SAFETY: Registration serializes access; FileMonitor drains callbacks before freeing the client.
+unsafe impl Send for Client {}
+
+#[derive(Clone)]
+pub(crate) struct Registration(Arc<Mutex<Client>>);
+
+impl Registration {
+    pub(crate) fn set_mode(&self, pid: i32, mediated: bool) -> io::Result<()> {
+        let client = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("native client lock failed"))?;
+        // SAFETY: the lock excludes client shutdown; the owned child waits at its launch gate.
+        if client.0.is_null() || !unsafe { box_es_set_process_mode(client.0, pid, mediated) } {
+            return Err(io::Error::other(
+                "native filesystem process registration failed",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct FileMonitor {
-    client: *mut c_void,
+    registration: Registration,
     context: Option<Box<Context>>,
 }
 
@@ -541,7 +565,7 @@ impl FileMonitor {
             "macOS file enforcement ready: five authorization events; deadline failures deny"
         );
         Ok(Self {
-            client,
+            registration: Registration(Arc::new(Mutex::new(Client(client)))),
             context: Some(context),
         })
     }
@@ -580,13 +604,22 @@ pub(crate) fn preflight() -> Result<(), NativeFilesystemError> {
 }
 
 impl FileMonitor {
+    pub(crate) fn registration(&self) -> Registration {
+        self.registration.clone()
+    }
+
     pub(crate) fn stop(&mut self) -> Result<(), NativeFilesystemError> {
-        if self.client.is_null() {
+        let mut client = self
+            .registration
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if client.0.is_null() {
             return Ok(());
         }
         // SAFETY: the bridge retains the client and callback storage on incomplete shutdown.
-        let code = unsafe { box_es_stop(self.client) };
-        self.client = std::ptr::null_mut();
+        let code = unsafe { box_es_stop(client.0) };
+        client.0 = std::ptr::null_mut();
         if let Some(context) = self.context.take()
             && code != 0
         {

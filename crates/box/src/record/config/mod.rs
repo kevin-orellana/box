@@ -447,7 +447,14 @@ impl RunContract {
         }
         Ok(ConfigureRequest {
             record: Record {
-                version: self.file.experimental_features.record_version(),
+                version: process_record_version(
+                    &self.file.experimental_features,
+                    self.file
+                        .agent
+                        .iter()
+                        .chain(self.file.tool.values())
+                        .chain(contained_mcp.values().map(|m| &m.spec)),
+                ),
                 experimental_features: self.file.experimental_features.clone(),
                 box_id: root.box_id().to_string(),
                 box_dir: root.root().to_path_buf(),
@@ -568,6 +575,7 @@ pub(crate) const RECORD_VERSION: u32 = 21;
 
 /// Version 22 prevents older builds from resuming a box without its selected enforcement.
 const EXPERIMENTAL_RECORD_VERSION: u32 = 22;
+const PROCESS_POLICY_RECORD_VERSION: u32 = 23;
 
 /// Experimental mechanisms require explicit operator selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,6 +610,20 @@ impl ExperimentalFeatures {
             });
         }
         Ok(())
+    }
+}
+
+fn process_record_version<'a>(
+    features: &ExperimentalFeatures,
+    specs: impl Iterator<Item = &'a ProcessSpec>,
+) -> u32 {
+    if specs
+        .into_iter()
+        .any(|spec| spec.native_filesystem_policy.is_some())
+    {
+        PROCESS_POLICY_RECORD_VERSION
+    } else {
+        features.record_version()
     }
 }
 
@@ -827,7 +849,13 @@ impl Record {
         // The removed keys are judged first, so an older record that carries one names the key
         // rather than a bare version mismatch.
         refuse_removed_keys(text, path)?;
-        if ![RECORD_VERSION, EXPERIMENTAL_RECORD_VERSION].contains(&stamped.version) {
+        if ![
+            RECORD_VERSION,
+            EXPERIMENTAL_RECORD_VERSION,
+            PROCESS_POLICY_RECORD_VERSION,
+        ]
+        .contains(&stamped.version)
+        {
             return Err(ConfigError::RecordVersion {
                 found: stamped.version,
                 expected: RECORD_VERSION,
@@ -838,7 +866,14 @@ impl Record {
             path: path.to_path_buf(),
             source,
         })?;
-        let expected = record.experimental_features.record_version();
+        let expected = process_record_version(
+            &record.experimental_features,
+            record
+                .agent
+                .iter()
+                .chain(record.tool.values())
+                .chain(record.contained_mcp.values().map(|m| &m.spec)),
+        );
         if record.version != expected {
             return Err(ConfigError::RecordVersion {
                 found: record.version,
@@ -859,12 +894,24 @@ impl Record {
     fn validate_processes(&self) -> Result<(), ConfigError> {
         if let Some(agent) = &self.agent {
             agent.validate("[agent]")?;
+            agent.validate_native_policy(
+                "[agent]",
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         for (label, tool) in &self.tool {
             tool.validate(&format!("[tool.{label}]"))?;
+            tool.validate_native_policy(
+                &format!("[tool.{label}]"),
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         for (name, contained) in &self.contained_mcp {
             contained.spec.validate(&format!("[mcp.{name}]"))?;
+            contained.spec.validate_native_policy(
+                &format!("[mcp.{name}]"),
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         Ok(())
     }
@@ -1109,13 +1156,25 @@ impl ConfigFile {
         BoxName::parse(&self.name)?;
         if let Some(agent) = &self.agent {
             agent.validate("[agent]")?;
+            agent.validate_native_policy(
+                "[agent]",
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         for (label, tool) in &self.tool {
             validate_tool_label(label)?;
             tool.validate(&format!("[tool.{label}]"))?;
+            tool.validate_native_policy(
+                &format!("[tool.{label}]"),
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         for (name, contained) in crate::record::config::mcp::contained_specs(&self.mcp) {
             contained.spec.validate(&format!("[mcp.{name}]"))?;
+            contained.spec.validate_native_policy(
+                &format!("[mcp.{name}]"),
+                self.experimental_features.native_filesystem_policy,
+            )?;
         }
         validate_egress(&self.egress)
     }
@@ -1195,6 +1254,7 @@ mod tests {
     /// One `[agent]` with the given command and nothing else.
     fn agent(command: &[&str]) -> ProcessSpec {
         ProcessSpec {
+            native_filesystem_policy: None,
             command: command.iter().map(|word| (*word).to_string()).collect(),
             workspace: None,
             env: Default::default(),
@@ -1220,6 +1280,52 @@ mod tests {
             contained_mcp: BTreeMap::new(),
             telemetry: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn process_policy_overrides_require_the_global_gate_and_a_new_record() {
+        for table in ["agent", "tool.cargo", "mcp.files"] {
+            let transport = if table.starts_with("mcp.") {
+                "type = \"stdio\"\n"
+            } else {
+                ""
+            };
+            let text = format!(
+                "name = \"codex\"\nbox_dir = \"/var/lib/box\"\n[{table}]\n{transport}command = [\"/bin/true\"]\nnative-filesystem-policy = true\n"
+            );
+            assert!(
+                ConfigFile::parse(&text, Path::new("box.toml")).is_err(),
+                "{table}"
+            );
+            let text = text.replace(
+                "native-filesystem-policy = true",
+                "native-filesystem-policy = false",
+            );
+            ConfigFile::parse(&text, Path::new("box.toml")).unwrap();
+        }
+        let mut spec = agent(&["/bin/true"]);
+        spec.native_filesystem_policy = Some(false);
+        let mut stored = record(Some(spec), BTreeMap::new());
+        let legacy = toml::to_string(&stored).unwrap();
+        assert!(Record::parse(&legacy, Path::new("record.toml")).is_err());
+        stored.version = PROCESS_POLICY_RECORD_VERSION;
+        let text = toml::to_string(&stored).unwrap();
+        assert_eq!(
+            Record::parse(&text, Path::new("record.toml")).unwrap(),
+            stored
+        );
+    }
+
+    #[test]
+    fn remote_mcp_cannot_select_local_filesystem_interception() {
+        let text = r#"name = "codex"
+box_dir = "/var/lib/box"
+[mcp.remote]
+type = "http"
+destinations = ["example.com"]
+native-filesystem-policy = false
+"#;
+        assert!(ConfigFile::parse(text, Path::new("box.toml")).is_err());
     }
 
     #[test]
@@ -1788,7 +1894,7 @@ env = {}
     /// A foreign version refuses, and the refusal names BOTH versions.
     #[test]
     fn a_record_from_another_format_is_refused() {
-        for found in [RECORD_VERSION - 1, EXPERIMENTAL_RECORD_VERSION + 1] {
+        for found in [RECORD_VERSION - 1, PROCESS_POLICY_RECORD_VERSION + 1] {
             let text = format!("version = {found}\n");
 
             let error = parsed_record(&text).expect_err("a foreign version must be refused");

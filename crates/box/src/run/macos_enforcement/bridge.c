@@ -33,6 +33,7 @@ typedef struct {
 typedef bool (*box_callback)(void *, const box_event *, int);
 typedef struct box_process {
     audit_token_t token;
+    bool mediated, root, registered;
     struct box_process *next;
 } box_process;
 
@@ -44,6 +45,8 @@ typedef struct {
     dispatch_group_t jobs;
     pthread_mutex_t processes_lock;
     box_process *processes;
+    uint64_t sequence, delivered;
+    bool has_sequence;
     _Atomic bool stopping, failed;
     _Atomic size_t queued;
 } box_client;
@@ -159,21 +162,40 @@ static void fail(box_client *owner, const box_event *event) {
     if (!atomic_exchange(&owner->failed, true)) owner->callback(owner->context, event, 4);
 }
 
-static void observe_process(box_client *owner, audit_token_t token, bool exited) {
+static bool same_process(audit_token_t a, audit_token_t b) {
+    return audit_token_to_pid(a) == audit_token_to_pid(b) &&
+        audit_token_to_pidversion(a) == audit_token_to_pidversion(b);
+}
+
+static bool process_mode(box_client *owner, audit_token_t token) {
+    bool mediated = true;
+    pthread_mutex_lock(&owner->processes_lock);
+    for (box_process *entry = owner->processes; entry; entry = entry->next)
+        if (same_process(entry->token, token)) { mediated = entry->mediated; break; }
+    pthread_mutex_unlock(&owner->processes_lock);
+    return mediated;
+}
+
+static void observe_process(box_client *owner, audit_token_t token, bool exited,
+                            bool mediated, bool root) {
     pid_t pid = audit_token_to_pid(token);
     if (pid == getpid() || pid <= 0) return;
     pthread_mutex_lock(&owner->processes_lock);
     box_process **entry = &owner->processes;
     while (*entry && audit_token_to_pid((*entry)->token) != pid) entry = &(*entry)->next;
     if (exited) {
-        if (*entry) {
+        if (*entry && same_process((*entry)->token, token)) {
             box_process *old = *entry;
             *entry = old->next;
             free(old);
         }
     } else {
         if (!*entry) *entry = calloc(1, sizeof(**entry));
-        if (*entry) (*entry)->token = token;
+        if (*entry) {
+            (*entry)->token = token;
+            (*entry)->mediated = mediated;
+            (*entry)->root = root;
+        }
         if (!*entry || atomic_load(&owner->stopping)) {
             (void)proc_signal_with_audittoken(&token, SIGKILL);
         }
@@ -194,22 +216,38 @@ static es_respond_result_t respond(es_client_t *client, const es_message_t *mess
 }
 
 static void receive(box_client *owner, es_client_t *client, const es_message_t *message) {
+    bool mediated = process_mode(owner, message->process->audit_token);
+    bool root = message->process->ppid == getpid();
     observe_process(owner, message->process->audit_token,
-                    message->event_type == ES_EVENT_TYPE_NOTIFY_EXIT);
+                    message->event_type == ES_EVENT_TYPE_NOTIFY_EXIT, mediated, root);
     if (message->event_type == ES_EVENT_TYPE_NOTIFY_FORK)
-        observe_process(owner, message->event.fork.child->audit_token, false);
+        observe_process(owner, message->event.fork.child->audit_token, false, mediated, false);
     if (message->event_type == ES_EVENT_TYPE_NOTIFY_EXEC)
-        observe_process(owner, message->event.exec.target->audit_token, false);
+        observe_process(owner, message->event.exec.target->audit_token, false, mediated, root);
     box_event event = {0};
     event.phase = message->action_type == ES_ACTION_TYPE_AUTH ? BOX_AUTH : BOX_NOTIFY;
     event.pid = audit_token_to_pid(message->process->audit_token);
     event.deadline = message->deadline;
-    event.sequence = message->version >= 4 ? message->global_seq_num : 0;
+    // Check every kernel message, including those that bypass Dogwood.
+    bool consecutive = message->version >= 4 && (!owner->has_sequence ||
+        (owner->sequence != UINT64_MAX && message->global_seq_num == owner->sequence + 1));
+    owner->has_sequence = true;
+    owner->sequence = message->version >= 4 ? message->global_seq_num : 0;
+    if (!consecutive) fail(owner, &event);
     event.valid = message->version >= 4 && decode(message, &event);
     if (atomic_load(&owner->stopping) || atomic_load(&owner->failed)) {
         if (event.phase == BOX_AUTH) (void)respond(client, message, event.flags, false);
         return;
     }
+    if (!mediated) {
+        if (event.phase == BOX_AUTH) {
+            uint32_t flags = message->event_type == ES_EVENT_TYPE_AUTH_OPEN ? message->event.open.fflag : 0;
+            if (respond(client, message, flags, true) != ES_RESPOND_RESULT_SUCCESS) fail(owner, &event);
+        }
+        return;
+    }
+    // Rust checks the contiguous sequence of dispatched messages, not bypassed messages.
+    event.sequence = ++owner->delivered;
     if (atomic_fetch_add(&owner->queued, 1) >= 1024) {
         atomic_fetch_sub(&owner->queued, 1);
         if (event.phase == BOX_AUTH) (void)respond(client, message, event.flags, false);
@@ -293,6 +331,27 @@ static bool synchronized(box_client *owner, dispatch_time_t deadline) {
     return success;
 }
 
+bool box_es_set_process_mode(void *raw, pid_t pid, bool mediated) {
+    if (__builtin_available(macOS 27.0, *)) {
+        box_client *owner = raw;
+        if (atomic_load(&owner->stopping) || atomic_load(&owner->failed) ||
+            !synchronized(owner, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC))) return false;
+        bool found = false;
+        pthread_mutex_lock(&owner->processes_lock);
+        for (box_process *entry = owner->processes; entry; entry = entry->next) {
+            if (audit_token_to_pid(entry->token) == pid && entry->root && !entry->registered) {
+                entry->mediated = mediated;
+                entry->registered = true;
+                found = true;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&owner->processes_lock);
+        return found;
+    }
+    return false;
+}
+
 /* Negative errors belong to this bridge. Positive errors are es_new_client_result_t. */
 void *box_es_start(void *context, box_callback callback, int *error) {
     *error = -1;
@@ -373,6 +432,7 @@ int box_es_stop(void *raw) {
 }
 
 #else
+bool box_es_set_process_mode(void *raw, pid_t pid, bool mediated) { (void)raw; (void)pid; (void)mediated; return false; }
 
 void *box_es_start(void *context, box_callback callback, int *error) {
     (void)context;

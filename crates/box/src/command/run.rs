@@ -338,6 +338,7 @@ mod tests {
 
     fn spec(command: &str, read: &[&str], write: &[&str]) -> ProcessSpec {
         ProcessSpec {
+            native_filesystem_policy: None,
             command: vec![command.to_string()],
             workspace: None,
             env: BTreeMap::new(),

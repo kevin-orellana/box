@@ -192,6 +192,8 @@ pub(crate) enum ShebangInterpreters {
 
 /// The translated boundary for one process.
 pub(crate) struct Boundary {
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    native_filesystem_policy: bool,
     /// The executable, canonical and prepared.
     executable: PathBuf,
 
@@ -652,7 +654,9 @@ impl Boundary {
             command_listed,
             broad_exec,
             native_egress: launch.egress == EgressMode::Native,
-            native_filesystem_policy: stored.experimental_features.native_filesystem_policy,
+            native_filesystem_policy: spec
+                .native_filesystem_policy
+                .unwrap_or(stored.experimental_features.native_filesystem_policy),
         });
 
         // The digest covers the exact bytes written, so the trampoline verifies what this process
@@ -681,6 +685,10 @@ impl Boundary {
             .filter(|spelled| *spelled != executable_path.as_path())
             .map(|spelled| spelled.display().to_string());
         Ok(Self {
+            #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+            native_filesystem_policy: spec
+                .native_filesystem_policy
+                .unwrap_or(site.stored.experimental_features.native_filesystem_policy),
             working_directory,
             executable: executable_path,
             program_identity,
@@ -694,6 +702,11 @@ impl Boundary {
             #[cfg(target_os = "linux")]
             served_ports: served_ports.clone(),
         })
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    pub(crate) fn native_filesystem_policy(&self) -> bool {
+        self.native_filesystem_policy
     }
 
     pub(crate) fn executable(&self) -> &Path {
@@ -1395,6 +1408,7 @@ mod tests {
         /// variables, and one entry in every list Linux lowers.
         fn spec(&self) -> ProcessSpec {
             ProcessSpec {
+                native_filesystem_policy: None,
                 command: vec!["/bin/sh".to_string(), "-c".to_string()],
                 workspace: Some(self.path("project")),
                 env: BTreeMap::from([
