@@ -864,6 +864,7 @@ mod tests {
             name: "codex".to_string(),
             policy: None,
             agent: Some(ProcessSpec {
+                native_filesystem_policy: None,
                 command: vec!["/bin/sh".to_string()],
                 workspace: None,
                 env: Default::default(),
@@ -960,6 +961,7 @@ permit (principal, action == alpha::Action::"read", resource);"#
         let vendor = home.join("vendor");
         std::fs::create_dir(&vendor).expect("a readable tree");
         let tool = |read: PathBuf| ProcessSpec {
+            native_filesystem_policy: None,
             command: vec!["/bin/sh".to_string()],
             workspace: None,
             env: Default::default(),
@@ -1776,6 +1778,7 @@ while :; do :; done"#
 
     fn selection_record(tools: &[(&str, &[&str])]) -> Record {
         let spec = |command: &[&str]| ProcessSpec {
+            native_filesystem_policy: None,
             command: command.iter().map(|part| (*part).to_string()).collect(),
             workspace: None,
             env: Default::default(),
@@ -1918,9 +1921,11 @@ while :; do :; done"#
             .expect("a built binary");
         let demo = demo.canonicalize().expect("canonical");
         let mut record = selection_record(&[("sh", &["/bin/sh"])]);
+        record.experimental_features.native_filesystem_policy = true;
         let agent = record.agent.as_mut().expect("an agent");
         agent.filesystem.exec = vec![root.path().join("target")];
         agent.filesystem.write = vec![root.path().to_path_buf()];
+        agent.native_filesystem_policy = Some(false);
         let expected = agent.filesystem.clone();
 
         let selected = select_tool(
@@ -1935,6 +1940,7 @@ while :; do :; done"#
         assert_eq!(selected.spec.command, vec![demo.display().to_string()]);
         assert_eq!(selected.trailing, ["--flag"]);
         assert_eq!(selected.spec.filesystem, expected);
+        assert_eq!(selected.spec.native_filesystem_policy, Some(false));
         assert_eq!(selected.spec.network, None);
     }
 
@@ -2151,6 +2157,7 @@ while :; do :; done"#
         }
         let workspace = root_path.join("workspace");
         let mut tool = ProcessSpec {
+            native_filesystem_policy: None,
             command: vec!["/bin/sh".to_string()],
             workspace: None,
             env: Default::default(),

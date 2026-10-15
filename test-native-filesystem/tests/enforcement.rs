@@ -460,29 +460,34 @@ when { context.input.path like "*/protected" };"#,
 
 #[test]
 fn shutdown_ends_a_descendant_outside_the_original_process_group() {
-    let fixture = Fixture::new(PERMIT, true);
-    fixture.run("detached", "detached.pid", "-", "allow", false);
-    let pid: u32 = std::fs::read_to_string(fixture.workspace.join("detached.pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let alive = Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+    for enabled in [true, false] {
+        let fixture = Fixture::new(PERMIT, true);
+        let command = fixture.command("detached", "detached.pid", "-", "allow", false);
+        process_selection(&fixture, enabled, "");
+        let output = bounded_output(command);
+        assert!(output.status.success(), "mode={enabled}: {output:?}");
+        let pid: u32 = std::fs::read_to_string(fixture.workspace.join("detached.pid"))
             .unwrap()
-            .success();
-        if !alive {
-            break;
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let alive = Command::new("/bin/kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "descendant {pid} outlived Box"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "descendant {pid} outlived Box"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -531,4 +536,189 @@ when temporal {
     assert_eq!(version(), 21);
     fixture.run("write", "once", "-", "deny", false);
     assert_eq!(version(), 22);
+}
+
+fn process_selection(fixture: &Fixture, agent: bool, tools: &str) {
+    let config_path = fixture.root.join("box.toml");
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        config_path,
+        format!(
+            "{}\n{tools}",
+            text.replace(
+                "[agent]\n",
+                &format!("[agent]\nnative-filesystem-policy = {agent}\n")
+            )
+        ),
+    )
+    .unwrap();
+}
+
+fn tool_selection(fixture: &Fixture, name: &str, operation: &str, mode: Option<bool>) -> String {
+    let quote = |path: &Path| toml::Value::String(path.display().to_string()).to_string();
+    let selected = mode
+        .map(|v| format!("native-filesystem-policy = {v}\n"))
+        .unwrap_or_default();
+    format!(
+        "[tool.{name}]\ncommand = [{}, \"{operation}\"]\n{selected}[tool.{name}.filesystem]\nread = [{}]\nwrite = [{}]\n",
+        quote(&fixture.probe),
+        quote(&fixture.workspace),
+        quote(&fixture.workspace)
+    )
+}
+
+#[test]
+fn disabled_agent_starts_under_a_restrictive_bootstrap_policy() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:read", resource)
+when { context.input.path == "/" || context.input.path like "*/protected" };"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+    let command = fixture.command("read", "protected", "-", "allow", false);
+    process_selection(&fixture, false, "");
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+    let output = bounded_output(fixture.command("read", "protected", "-", "deny", false));
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn disabled_tools_start_under_a_restrictive_bootstrap_policy() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:read", resource)
+when { context.input.path == "/" || context.input.path like "*/protected" };"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+    let read = format!(
+        "'{}' read protected - allow child-exec",
+        fixture.probe.display()
+    );
+    let command = fixture.command("shells", &read, &read, "allow", false);
+    process_selection(
+        &fixture,
+        false,
+        &tool_selection(&fixture, "read", "read", Some(false)),
+    );
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn independent_agent_and_tool_modes_survive_concurrent_forks_and_exec() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:write", resource)
+when { context.input.path like "*/protected" };"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+    let off = format!(
+        "'{}' write protected - allow child-exec",
+        fixture.probe.display()
+    );
+    let on = format!(
+        "'{}' append protected - deny child-exec",
+        fixture.probe.display()
+    );
+    let tools = format!(
+        "{}\n{}",
+        tool_selection(&fixture, "off", "write", Some(false)),
+        tool_selection(&fixture, "on", "append", None)
+    );
+    for agent in [true, false] {
+        let command = fixture.command("shells", &off, &on, "allow", false);
+        process_selection(&fixture, agent, &tools);
+        let output = bounded_output(command);
+        assert!(output.status.success(), "agent={agent}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+            "{output:?}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("protected")).unwrap(),
+            b"changedl"
+        );
+    }
+}
+
+#[test]
+fn a_disabled_agent_retains_containment_and_does_not_record_native_history() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:write", resource)
+when { context.input.path == "~/workspace/once" }
+when temporal {
+    formerly within 300s (
+        Box::Action::"fs:write"::response{
+            input.path: "~/workspace/once",
+            output.result: Box::FsResponseResult::"indeterminate"
+        }
+    )
+};"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("once"), "original").unwrap();
+    let command = fixture.command("write", "once", "-", "allow", true);
+    process_selection(&fixture, false, "");
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    // The disabled access must not consume the temporal rule's one permitted write.
+    fixture.run("write", "once", "-", "allow", false);
+    fixture.run("write", "once", "-", "deny", false);
+
+    let restricted = Fixture::new(PERMIT, false);
+    std::fs::write(restricted.workspace.join("protected"), "original").unwrap();
+    let command = restricted.command("write", "protected", "-", "deny", true);
+    process_selection(&restricted, false, "");
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read(restricted.workspace.join("protected")).unwrap(),
+        b"original"
+    );
+}
+
+#[test]
+fn local_mcp_selection_is_independent_of_the_agent() {
+    for enabled in [false, true] {
+        let fixture = Fixture::new(
+            r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:write", resource)
+when { context.input.path like "*/protected" };"#,
+            true,
+        );
+        std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+        let command = fixture.command("mcp-client", "probe", "-", "allow", false);
+        let quote = |path: &Path| toml::Value::String(path.display().to_string()).to_string();
+        let server = format!(
+            "[mcp.files]\ntype = \"stdio\"\ncommand = [\"probe\", \"mcp-server\", \"protected\", \"mcp-result\", \"allow\", \"self\"]\nnative-filesystem-policy = {enabled}\nenv = {{ PATH = {} }}\nworkspace = {}\n[mcp.files.filesystem]\nread = [{}]\nwrite = [{}]\n",
+            quote(&fixture.root),
+            quote(&fixture.workspace),
+            quote(&fixture.workspace),
+            quote(&fixture.workspace)
+        );
+        process_selection(&fixture, !enabled, &server);
+        let output = bounded_output(command);
+        assert!(output.status.success(), "server={enabled}: {output:?}");
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace.join("mcp-result")).unwrap(),
+            if enabled { "-1" } else { "0" }
+        );
+    }
 }

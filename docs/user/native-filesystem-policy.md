@@ -26,13 +26,48 @@ An absent table or `false` leaves native interception disabled, including in an 
 A selected but unavailable mechanism refuses startup. Box never silently disables the selected checks.
 Standard release artifacts exclude the experiment.
 
+## Select workloads
+
+The global experimental setting enables the mechanism and supplies the default for every workload.
+Add `native-filesystem-policy` to an existing `[agent]`, `[tool.<name>]`, or local `[mcp.<name>]` table to override that default.
+Only selection fields appear below. Retain each table's required command and other settings.
+
+```toml
+[experimental-features]
+native-filesystem-policy = true
+
+[agent]
+native-filesystem-policy = true
+
+[tool.cargo]
+native-filesystem-policy = false
+
+[mcp.files]
+native-filesystem-policy = true
+```
+
+An absent process setting inherits the global default, not the agent's override.
+Children inherit their workload's selection across forks and executable changes.
+A tool that Box launches through a declared table receives that table's selection.
+Executing a program directly inside a workload does not select a different tool table.
+
+An explicit `true` requires the global experimental setting.
+Remote MCP entries cannot select this feature because Box does not launch their processes.
+Changes apply on the next Box run.
+
+Disabled workloads retain their sandbox restrictions and shutdown tracking.
+Their native filesystem operations do not produce Dogwood permission or outcome records.
+Later history-based rules cannot rely on observing those operations.
+Shell and network policy checks remain active.
+Kernel event delivery and trusted launcher setup can still add overhead.
+
 ## Coverage and limits
 
-The adapter checks open, create, unlink, rename, and truncate requests from descendants of the trusted Box process.
+The adapter checks open, create, unlink, rename, and truncate requests from selected descendants of the box's trusted process.
 It uses the box's existing durable Dogwood history. Filesystem grants still restrict each process through Seatbelt, the macOS process sandbox.
 A policy permit cannot expand those grants.
 
-The adapter disables authorization caching and requests kernel denial for missed deadlines or dropped authorization messages.
+For mediated workloads, the adapter disables authorization caching and requests kernel denial for missed deadlines or dropped authorization messages.
 Accepted authorization replies produce `indeterminate` outcomes. These records confirm authorization, not successful filesystem effects.
 
 An existing open file descriptor can still carry later reads or writes without another open request.
@@ -48,13 +83,15 @@ Production use still requires further review and tests for those failures.
 
 ## Stored configuration and rollback
 
-Disabled configurations retain record version 21. Enabled configurations use version 22.
-Older binaries refuse version 22 rather than silently losing enforcement.
+Configurations without process overrides retain version 21 when disabled and version 22 when enabled.
+Any explicit process override requires record version 23.
+Older binaries refuse unsupported versions rather than silently losing the selection.
 
-To disable the experiment, change the setting to `false`.
+To disable the experiment, change the global setting to `false`.
+Remove all process overrides before returning to a binary that supports only version 21.
 Run once with the native-capable build before returning to an older binary.
 This writes a version 21 record while retaining durable policy history.
-Changing the setting directly to `false` does not authorize an older binary to parse an existing version 22 record.
+Changing TOML alone does not authorize an older binary to parse an existing version 22 or 23 record.
 
 ## FAQ
 
@@ -82,7 +119,14 @@ The TOML setting activates it for a box.
 
 Box refuses startup before the workload runs or the stored record changes.
 It does not silently disable the selected checks.
-An absent setting or `false` keeps interception disabled.
+An absent global setting or `false` keeps interception disabled.
+An absent process setting inherits the global default.
+
+### Can I disable a tool while keeping the agent mediated?
+
+Yes. Use the per-process settings in [Select workloads](#select-workloads).
+Tools and local MCP servers inherit the global default independently of the agent.
+Disabling a workload also excludes its native filesystem operations from policy history.
 
 ### Does this change where policy history lives?
 
@@ -111,7 +155,7 @@ Tests cover normal detached-child cleanup, but not every shutdown failure or enf
 
 ### Can I immediately return to an older binary?
 
-No, if the box has an enabled version 22 record.
+No, if the box has a version 22 or 23 record that the older binary does not support.
 Follow [Stored configuration and rollback](#stored-configuration-and-rollback) before starting an older binary.
 Changing TOML alone does not rewrite the stored record.
 

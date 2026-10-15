@@ -407,8 +407,13 @@ impl Contained {
             .stderr(Stdio::inherit());
         let signals = Signals::listen()?;
         #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
-        let mut group =
-            spawn_registered(command, &mut trampoline, hosted.native_registration(), true).await?;
+        let mut group = spawn_registered(
+            command,
+            &mut trampoline,
+            hosted.native_registration(),
+            boundary.native_filesystem_policy(),
+        )
+        .await?;
         #[cfg(not(all(target_os = "macos", feature = "native-filesystem-policy")))]
         let mut group = ProcessGroup::spawn(command).await?;
         let terminal = if claim_terminal {
@@ -590,7 +595,13 @@ impl LeafBox {
         #[cfg(not(all(target_os = "macos", feature = "native-filesystem-policy")))]
         let mut group = ProcessGroup::spawn(command).await?;
         #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
-        let group = spawn_registered(command, &mut trampoline, registration, true).await?;
+        let group = spawn_registered(
+            command,
+            &mut trampoline,
+            registration,
+            boundary.native_filesystem_policy(),
+        )
+        .await?;
 
         // Start the relay only after the child is spawned: `start_each` blocks until the descriptor
         // arrives, and the descriptor comes from the trampoline. Held until the child exits.
