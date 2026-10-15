@@ -83,7 +83,8 @@ fn rename_checks_read_and_both_move_targets_and_authorizes_replacement() {
     raw.destination_identity = PARENT_IDENTITY;
     let plan = Plan::decode(&raw).unwrap();
     assert_eq!(plan.checks.len(), 3);
-    assert_eq!(plan.checks[0].operation, FsOperation::ReadContent);
+    assert_eq!(plan.checks[0].operation, FsOperation::Rename);
+    assert_eq!(plan.checks[1].operation, FsOperation::ReadContent);
     assert_eq!(plan.checks[1].path, Path::new("/source"));
     assert_eq!(plan.checks[2].path, Path::new("/destination"));
     raw.destination_exists = 1;
@@ -93,7 +94,8 @@ fn rename_checks_read_and_both_move_targets_and_authorizes_replacement() {
     raw.destination_mode = libc::S_IFREG as u32;
     let plan = Plan::decode(&raw).unwrap();
     assert_eq!(plan.checks.len(), 5);
-    assert_eq!(plan.checks[3].operation, FsOperation::RemoveFile);
+    assert_eq!(plan.checks[2].operation, FsOperation::RemoveFile);
+    assert_eq!(plan.checks[3].operation, FsOperation::Rename);
     assert_eq!(plan.checks[4].operation, FsOperation::WriteContent);
     assert_eq!(plan.identities[1].path, Path::new("/destination"));
     raw.destination_mode = libc::S_IFDIR as u32;

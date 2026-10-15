@@ -197,4 +197,9 @@ python3 test-native-filesystem/receipt.py \
 ```
 
 Review the receipt with the test log. Relevant source changes require a new build and signed run.
+The receipt covers workspace package sources and assets, build configuration, lockfiles,
+the native test package, its shared capture helper, and the native workflow.
+Cargo supplies the workspace package list, including nested packages.
+Separate crate tests, examples, benchmarks, documentation, and unrelated workflows do not require a new signed run.
+The required native workflow also runs startup-refusal tests with and without the Cargo feature.
 

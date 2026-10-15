@@ -28,11 +28,17 @@ jobs:
         run: |
           cargo build --locked -p strands-box -p strands-box-containment --all-features
           cargo test --manifest-path test-native-filesystem/Cargo.toml --locked --no-run
+          cargo fmt --manifest-path test-native-filesystem/Cargo.toml --check
+          cargo clippy --manifest-path test-native-filesystem/Cargo.toml --locked --all-targets --all-features -- -D warnings
       - name: Test native adapter and configuration
         run: |
           cargo test --locked -p strands-box --all-features --bin strands-box macos_enforcement
           cargo test --locked -p strands-box --all-features --bin strands-box native_
           cargo test --locked -p strands-box --all-features --bin strands-box record::config::
+      - name: Test startup and record preservation
+        run: |
+          cargo test --locked -p strands-box --all-features --test macos_file_enforcement
+          cargo test --locked -p strands-box --no-default-features --test macos_file_enforcement
       - name: Check signed test receipt freshness
         run: |
           python3 -m unittest discover -s test-native-filesystem -p '*_test.py'

@@ -140,6 +140,126 @@ write = [{}]
 const PERMIT: &str = "permit(principal, action, resource);";
 
 #[test]
+fn native_and_shell_rename_share_source_history_order() {
+    for native in [true, false] {
+        let fixture = Fixture::new(
+            r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:move", resource)
+when { context.input.path == "~/workspace/source" }
+unless temporal {
+    formerly within 300s (
+        Box::Action::"fs:read"::request{
+            input.path: "~/workspace/source",
+            input.operation: Box::FsReadOperation::"read_content"
+        }
+    )
+};"#,
+            true,
+        );
+        std::fs::write(fixture.workspace.join("source"), "original").unwrap();
+        if native {
+            fixture.run("rename", "source", "destination", "deny", false);
+        } else {
+            let output = bounded_output(fixture.command(
+                "shell",
+                "mv source destination",
+                "-",
+                "allow",
+                false,
+            ));
+            assert!(!output.status.success(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("policy denied"),
+                "{output:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("source")).unwrap(),
+            b"original"
+        );
+        assert!(!fixture.workspace.join("destination").exists());
+    }
+}
+
+#[test]
+fn native_and_shell_replacement_share_destination_history_order() {
+    for native in [true, false] {
+        let fixture = Fixture::new(
+            r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:move", resource)
+when { context.input.path == "~/workspace/destination" }
+unless temporal {
+    formerly within 300s (
+        Box::Action::"fs:delete"::request{input.path: "~/workspace/destination"}
+    )
+};"#,
+            true,
+        );
+        std::fs::write(fixture.workspace.join("source"), "new").unwrap();
+        std::fs::write(fixture.workspace.join("destination"), "old").unwrap();
+        if native {
+            fixture.run("rename", "source", "destination", "allow", false);
+        } else {
+            let output = bounded_output(fixture.command(
+                "shell",
+                "mv source destination",
+                "-",
+                "allow",
+                false,
+            ));
+            assert!(output.status.success(), "{output:?}");
+        }
+        assert!(!fixture.workspace.join("source").exists());
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("destination")).unwrap(),
+            b"new"
+        );
+    }
+}
+
+#[test]
+fn fork_then_exec_preserves_native_policy() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:write", resource)
+when { context.input.path like "*/protected" };"#,
+        true,
+    );
+    for (path, expected) in [("protected", "deny"), ("ordinary", "allow")] {
+        std::fs::write(fixture.workspace.join(path), "original").unwrap();
+        let original = fixture.command("write", path, "-", expected, false);
+        let mut command = Command::new(original.get_program());
+        command
+            .args(original.get_args().take(original.get_args().len() - 1))
+            .arg("child-exec");
+        command.current_dir(original.get_current_dir().unwrap());
+        for (key, value) in original.get_envs() {
+            command.env(key, value.unwrap());
+        }
+        let output = bounded_output(command);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("NATIVE_RESULT="),
+            "{output:?}"
+        );
+        if expected == "deny" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+                "{output:?}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(fixture.workspace.join("protected")).unwrap(),
+        b"original"
+    );
+    assert_eq!(
+        std::fs::read(fixture.workspace.join("ordinary")).unwrap(),
+        b"changedl"
+    );
+}
+
+#[test]
 fn trusted_launcher_reads_are_not_workload_requests() {
     let fixture = Fixture::new(
         r#"permit(principal, action, resource);
@@ -520,6 +640,11 @@ when temporal {
         value["version"].as_integer().unwrap()
     };
     assert_eq!(version(), 22);
+    let command = fixture.command("read", "once", "-", "allow", false);
+    process_selection(&fixture, true, "");
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(version(), 23);
     let command = fixture.command("read", "once", "-", "allow", false);
     let config_path = fixture.root.join("box.toml");
     let text = std::fs::read_to_string(&config_path).unwrap();
