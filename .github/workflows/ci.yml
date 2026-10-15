@@ -34,6 +34,7 @@ jobs:
           # bare negation fires on everything).
           filters: |
             native:
+              - '.cargo/**'
               - 'crates/**/!(*.md)'
               - 'Cargo.toml'
               - 'Cargo.lock'

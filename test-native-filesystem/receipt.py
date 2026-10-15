@@ -11,7 +11,31 @@ ROOT = Path(__file__).resolve().parent.parent
 RECEIPT = ROOT / "test-native-filesystem/signed-receipt.json"
 
 
+def covered(name, packages):
+    if name.endswith(".md") or name == RECEIPT.relative_to(ROOT).as_posix():
+        return False
+    if name in (
+        "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+        ".github/workflows/native-filesystem.yml",
+        "crates/box/tests/support/bounded_output.rs",
+    ) or name.startswith((".cargo/", "test-native-filesystem/")):
+        return True
+    for package in sorted(packages, key=len, reverse=True):
+        if name.startswith(package + "/"):
+            relative = name[len(package) + 1:]
+            return relative.split("/")[0] not in ("tests", "benches", "examples")
+    return False
+
+
 def sources():
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--no-deps", "--locked", "--offline", "--format-version", "1"],
+        cwd=ROOT, text=True,
+    ))
+    packages = [
+        Path(package["manifest_path"]).parent.relative_to(ROOT).as_posix()
+        for package in metadata["packages"]
+    ]
     names = subprocess.check_output(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT,
@@ -21,12 +45,7 @@ def sources():
         name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
         for name in sorted(set(names))
         if (ROOT / name).is_file()
-        and name != RECEIPT.relative_to(ROOT).as_posix()
-        and (
-            name.startswith(("crates/", "test-native-filesystem/", ".github/workflows/"))
-            or name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
-        )
-        and not name.endswith(".md")
+        and covered(name, packages)
     }
 
 

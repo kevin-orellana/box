@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from receipt import verify
+from receipt import covered, verify
 
 
 class ReceiptTests(unittest.TestCase):
@@ -37,6 +37,35 @@ class ReceiptTests(unittest.TestCase):
         for sources in ({}, {**self.sources, "crates/box/build.rs": "new"}):
             with self.assertRaises(ValueError):
                 verify(self.receipt, sources, self.tests)
+
+    def test_production_dependencies_and_native_test_inputs_are_covered(self):
+        packages = ["crates/box", "crates/policy", "crates/shell",
+                    "crates/shell/strands-shell-macros", "crates/new-dependency"]
+        for name in (
+            "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
+            "crates/box/Cargo.toml", "crates/box/build.rs", "crates/box/src/run/mod.rs",
+            "crates/policy/schema/events.dwschema",
+            "crates/shell/strands-shell-macros/src/lib.rs",
+            "crates/new-dependency/assets/runtime.json",
+            "crates/box/tests/support/bounded_output.rs",
+            "test-native-filesystem/tests/enforcement.rs",
+            ".github/workflows/native-filesystem.yml",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(covered(name, packages))
+
+    def test_unrelated_tests_and_workflows_do_not_require_a_signed_run(self):
+        packages = ["crates/box", "crates/shell", "crates/shell/strands-shell-macros"]
+        for name in (
+            "crates/box/tests/four_inputs.rs", "crates/shell/tests/admission.rs",
+            "crates/shell/strands-shell-macros/tests/expansion.rs",
+            "crates/box/benches/startup.rs", "crates/box/examples/simple.rs",
+            "crates/box-bench/src/main.rs", ".github/workflows/pr-title.yml",
+            ".github/workflows/ci.yml", "docs/user/native-filesystem-policy.md",
+            "test-native-filesystem/signed-receipt.json",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(covered(name, packages))
 
 
 if __name__ == "__main__":

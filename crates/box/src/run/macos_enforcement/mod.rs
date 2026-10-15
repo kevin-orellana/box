@@ -91,16 +91,9 @@ fn refused(reason: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, reason)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("Dogwood denied this file operation")]
 struct PolicyRefusal;
-
-impl std::fmt::Display for PolicyRefusal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Dogwood denied this file operation")
-    }
-}
-
-impl std::error::Error for PolicyRefusal {}
 
 fn path(bytes: &[u8; 4096]) -> io::Result<PathBuf> {
     let length = bytes
@@ -229,11 +222,13 @@ impl Plan {
                     device: event.destination_dev,
                     inode: event.destination_ino,
                 });
-                add(&source, FsOperation::ReadContent, "fs:read", true);
                 add(&source, FsOperation::Rename, "fs:move", true);
-                add(&destination, FsOperation::Rename, "fs:move", true);
+                add(&source, FsOperation::ReadContent, "fs:read", true);
                 if replacement {
                     add(&destination, FsOperation::RemoveFile, "fs:delete", true);
+                }
+                add(&destination, FsOperation::Rename, "fs:move", true);
+                if replacement {
                     add(&destination, FsOperation::WriteContent, "fs:write", true);
                 }
             }

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from checks import checks
 
@@ -63,6 +64,53 @@ class NativeEvidenceTests(unittest.TestCase):
                         item=dict(type="file_change", id="edit-1", status="failed",
                                   changes=[dict(path="protected.txt", kind="update")])))
         self.assertEqual(self.failed("codex"), set())
+
+    def test_truncated_command_record_cannot_pass(self):
+        self.write_json("turns.jsonl", dict(type="item.completed",
+                        item=dict(type="file_change", id="edit-1", status="failed",
+                                  changes=[dict(path="protected.txt", kind="update")])))
+        with (self.run / "turns.jsonl").open("a") as stream:
+            stream.write('{"type":"item.completed","item":{"type":"command_execution"\n')
+        self.assertIn("readable-turns.jsonl", self.failed("codex"))
+
+    def test_malformed_required_record_cannot_pass(self):
+        for name in ("agent-a.json", "decisions.jsonl", "turns.jsonl"):
+            with self.subTest(name=name):
+                path = self.run / name
+                before = path.read_bytes()
+                path.write_bytes(before + b"\xff\n")
+                self.assertIn("readable-" + name, self.failed())
+                path.write_bytes(before)
+
+    def test_non_object_record_cannot_pass(self):
+        with (self.run / "turns.jsonl").open("a") as stream:
+            stream.write("[]\n")
+        self.assertIn("readable-turns.jsonl", self.failed())
+
+    def test_case_or_hardlink_alias_cannot_hide_a_second_edit(self):
+        original = self.project / "protected.txt"
+        alias = self.project / "PROTECTED.txt"
+        if not alias.exists():
+            os.link(original, alias)
+        self.assertTrue(alias.samefile(original))
+        self.events[0]["message"]["content"].append(
+            dict(type="tool_use", name="Edit", id="edit-2", input=dict(file_path=str(alias))))
+        self.write_json("turns.jsonl", self.events[0])
+        with (self.run / "agent-a.log").open("a") as stream:
+            stream.write("MACOS_FILE_DIAGNOSTIC " + json.dumps(self.denial) + "\n")
+        self.assertIn("one-protected-attempt", self.failed())
+
+    def test_symlink_alias_cannot_hide_a_second_edit(self):
+        alias = self.project / "alias.txt"
+        alias.symlink_to("protected.txt")
+        self.events[0]["message"]["content"].append(
+            dict(type="tool_use", name="Edit", id="edit-2", input=dict(file_path=str(alias))))
+        self.write_json("turns.jsonl", self.events[0])
+        self.assertIn("one-protected-attempt", self.failed())
+
+    def test_unreadable_file_identity_cannot_pass(self):
+        with mock.patch("checks.os.path.samefile", side_effect=PermissionError("unreadable")):
+            self.assertIn("protected-attempt-path-readable", self.failed())
 
     def test_codex_started_and_completed_count_once(self):
         item = dict(type="file_change", id="edit-1", changes=[dict(path="protected.txt", kind="update")])
