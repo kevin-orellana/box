@@ -219,8 +219,7 @@ impl BrokerHost {
             })
             .map_err(|source| ShellError::Serve { source })?;
 
-        // Block until the thread has bound, or failed to. `recv` also errors if the
-        // thread died before reporting, so a panic during setup surfaces here rather than
+        // Wait until the server thread is ready; the caller already bound its socket.
         match ready_receiver.recv() {
             Ok(Ok(())) => Ok(Self {
                 shutdown: Some(shutdown_sender),

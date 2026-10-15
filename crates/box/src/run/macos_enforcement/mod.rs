@@ -12,6 +12,7 @@ use policy::{
 };
 
 use super::telemetry::{DecisionRecorder, EffectiveDecision};
+use crate::error::NativeFilesystemError;
 
 const OPEN: u32 = 1;
 const CREATE: u32 = 2;
@@ -55,9 +56,13 @@ unsafe extern "C" {
         callback: unsafe extern "C" fn(*mut c_void, *const RawEvent, i32) -> bool,
         error: *mut i32,
     ) -> *mut c_void;
-    fn box_es_stop(client: *mut c_void) -> bool;
+    fn box_es_stop(client: *mut c_void) -> i32;
     #[cfg(test)]
     fn box_es_event_size() -> usize;
+    #[cfg(test)]
+    fn box_es_event_offset(field: usize) -> usize;
+    #[cfg(test)]
+    fn box_es_has_children(process: i32) -> bool;
 }
 
 struct Check {
@@ -152,7 +157,7 @@ impl Plan {
                         | libc::O_SYMLINK) as u32;
                     let operation = match event.flags & !modifiers {
                         mode if mode == libc::O_EVTONLY as u32 => {
-                            // The native regression test can read bytes through this descriptor.
+                            // Event-only descriptors still require content permission.
                             FsOperation::ReadContent
                         }
                         mode if mode == libc::O_EXEC as u32 => FsOperation::ExecFile,
@@ -245,10 +250,18 @@ impl Plan {
     }
 }
 
+struct PendingDecision {
+    path: String,
+    operation: FsOperation,
+    action: &'static str,
+    decision: policy::Decision,
+}
+
 #[derive(Default)]
 struct Tracker {
     sequence: Option<u64>,
-    pending: Vec<(String, FsOperation)>,
+    pending: Vec<PendingDecision>,
+    refusal: Option<String>,
     failed: bool,
     allowed: u64,
     denied: u64,
@@ -307,17 +320,16 @@ impl Context {
     fn failed(&self, tracker: &mut Tracker, reason: impl Into<String>) {
         tracker.failed = true;
         let _ = self.fatal.send(
-            crate::error::SuperviseError::Control {
-                reason: format!("macOS file enforcement: {}", reason.into()),
+            NativeFilesystemError::Callback {
+                reason: reason.into(),
             }
             .into(),
         );
     }
 
-    fn decide(&self, event: &RawEvent) -> io::Result<Vec<(String, FsOperation)>> {
+    fn decide(&self, event: &RawEvent, pending: &mut Vec<PendingDecision>) -> io::Result<()> {
         let plan = Plan::decode(event)?;
         plan.verify()?;
-        let mut admitted = Vec::new();
         for check in &plan.checks {
             let approved = if check.entry {
                 self.resolver.approve_host_entry(&check.path)
@@ -333,21 +345,22 @@ impl Context {
                     operation: check.operation,
                 },
             );
-            self.recorder.record(EffectiveDecision::from_policy(
-                check.action,
-                approved.reported(),
-                &decision,
-            ));
-            if !decision.is_allow() {
+            let allowed = decision.is_allow();
+            pending.push(PendingDecision {
+                path: approved.reported().into_owned(),
+                operation: check.operation,
+                action: check.action,
+                decision,
+            });
+            if !allowed {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     PolicyRefusal,
                 ));
             }
-            admitted.push((approved.reported().into_owned(), check.operation));
         }
         plan.verify()?;
-        Ok(admitted)
+        Ok(())
     }
 
     fn receive(&self, event: &RawEvent, status: i32) -> bool {
@@ -359,17 +372,56 @@ impl Context {
                     "authorization reply failed or missed its deadline",
                 );
             }
-            // An accepted reply does not establish syscall completion. Preserve that uncertainty.
-            for (path, operation) in std::mem::take(&mut tracker.pending) {
-                if let Err(error) = self.engine.record(
-                    &self.governed,
-                    &Principal::agent(),
-                    &Outcome::Fs {
-                        path: Path::new(&path),
-                        operation,
-                        result: FsResult::Indeterminate,
-                    },
-                ) {
+            let allowed = status == 0 && event.result == 1 && tracker.refusal.is_none();
+            let refusal = tracker
+                .refusal
+                .take()
+                .unwrap_or_else(|| "the kernel reply did not authorize this operation".to_string());
+            let pending = std::mem::take(&mut tracker.pending);
+            if pending.is_empty() && !allowed {
+                let action = match event.kind {
+                    OPEN => "fs:read",
+                    UNLINK => "fs:delete",
+                    RENAME => "fs:move",
+                    _ => "fs:write",
+                };
+                let resource = path(&event.path)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "invalid kernel path".into());
+                self.recorder.record(EffectiveDecision::enforcement_deny(
+                    action,
+                    resource,
+                    "native-filesystem-policy",
+                    &refusal,
+                ));
+            }
+            for pending in pending {
+                self.recorder
+                    .record(if allowed || !pending.decision.is_allow() {
+                        EffectiveDecision::from_policy(
+                            pending.action,
+                            &pending.path,
+                            &pending.decision,
+                        )
+                    } else {
+                        EffectiveDecision::enforcement_deny(
+                            pending.action,
+                            &pending.path,
+                            "native-filesystem-policy",
+                            &refusal,
+                        )
+                    });
+                if allowed
+                    && let Err(error) = self.engine.record(
+                        &self.governed,
+                        &Principal::agent(),
+                        &Outcome::Fs {
+                            path: Path::new(&pending.path),
+                            operation: pending.operation,
+                            result: FsResult::Indeterminate,
+                        },
+                    )
+                {
                     self.failed(
                         &mut tracker,
                         format!("recording authorization outcome: {error}"),
@@ -389,18 +441,20 @@ impl Context {
             return false;
         }
         tracker.pending.clear();
+        tracker.refusal = None;
         if tracker.failed {
             tracker.denied += 1;
+            tracker.refusal = Some("monitor failed before authorization".into());
             self.diagnostic(event, "adapter", "monitor failed before authorization");
             return false;
         }
-        match self.decide(event) {
-            Ok(admitted) => {
-                tracker.pending = admitted;
+        match self.decide(event, &mut tracker.pending) {
+            Ok(()) => {
                 tracker.allowed += 1;
                 true
             }
             Err(error) => {
+                tracker.refusal = Some(error.to_string());
                 tracker.denied += 1;
                 self.diagnostic(
                     event,
@@ -431,6 +485,15 @@ unsafe extern "C" fn receive(context: *mut c_void, event: *const RawEvent, statu
     // SAFETY: the bridge calls synchronously with a live Context and stack-owned RawEvent.
     let context = unsafe { &*context.cast::<Context>() };
     let event = unsafe { &*event };
+    if status == 4 {
+        let _ = context.fatal.send(
+            NativeFilesystemError::Callback {
+                reason: "event queue or process tracking failed".into(),
+            }
+            .into(),
+        );
+        return false;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         context.receive(event, status)
     }))
@@ -456,13 +519,13 @@ impl FileMonitor {
         name: &str,
         home: &Path,
         fatal: tokio::sync::mpsc::UnboundedSender<crate::error::BoxError>,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, NativeFilesystemError> {
         let mut context = Box::new(Context {
             engine,
             recorder,
             governed: GovernedBox::assigned(name),
             resolver: PathResolver::over([PathBuf::from("/")])
-                .map_err(io::Error::other)?
+                .map_err(|source| NativeFilesystemError::Paths { source })?
                 .reporting_under(home),
             fatal,
             tracker: Mutex::new(Tracker::default()),
@@ -472,17 +535,7 @@ impl FileMonitor {
         let client =
             unsafe { box_es_start((&mut *context as *mut Context).cast(), receive, &mut error) };
         if client.is_null() {
-            let reason = match error {
-                -1 => "macOS 27 or later is required",
-                -2 => "client allocation failed",
-                -3 => "the kernel did not confirm fail-closed deadline handling",
-                -4 => "the kernel did not confirm all required subscriptions",
-                -5 => "this binary requires a rebuild with the macOS 27 SDK or later",
-                _ => "client creation failed; verify the signed Endpoint Security entitlement",
-            };
-            return Err(io::Error::other(format!(
-                "{reason} (Endpoint Security setup code {error})"
-            )));
+            return Err(startup_error(error));
         }
         eprintln!(
             "macOS file enforcement ready: five authorization events; deadline failures deny"
@@ -494,25 +547,63 @@ impl FileMonitor {
     }
 }
 
+fn startup_error(code: i32) -> NativeFilesystemError {
+    match code {
+        -1 => NativeFilesystemError::Runtime,
+        -2 => NativeFilesystemError::Allocation,
+        -3 => NativeFilesystemError::Deadlines,
+        -4 => NativeFilesystemError::Subscriptions,
+        -5 => NativeFilesystemError::Sdk,
+        -6 => NativeFilesystemError::Muting,
+        -7 => NativeFilesystemError::ExistingChildren,
+        code => NativeFilesystemError::Client { code },
+    }
+}
+
+pub(crate) fn preflight() -> Result<(), NativeFilesystemError> {
+    unsafe extern "C" fn refuse(_: *mut c_void, _: *const RawEvent, _: i32) -> bool {
+        false
+    }
+    let mut error = 0;
+    // SAFETY: this preflight callback borrows no context and always refuses authorization.
+    let client = unsafe { box_es_start(std::ptr::null_mut(), refuse, &mut error) };
+    if client.is_null() {
+        return Err(startup_error(error));
+    }
+    // SAFETY: no other owner can access this preflight client.
+    let code = unsafe { box_es_stop(client) };
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(NativeFilesystemError::Shutdown { code })
+    }
+}
+
+impl FileMonitor {
+    pub(crate) fn stop(&mut self) -> Result<(), NativeFilesystemError> {
+        if self.client.is_null() {
+            return Ok(());
+        }
+        // SAFETY: the bridge retains the client and callback storage on incomplete shutdown.
+        let code = unsafe { box_es_stop(self.client) };
+        self.client = std::ptr::null_mut();
+        if let Some(context) = self.context.take()
+            && code != 0
+        {
+            Box::leak(context);
+        }
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(NativeFilesystemError::Shutdown { code })
+        }
+    }
+}
+
 impl Drop for FileMonitor {
     fn drop(&mut self) {
-        if self.client.is_null() {
-            return;
-        }
-        // SAFETY: this is the sole owner. The bridge drains callbacks before returning success.
-        let stopped = unsafe { box_es_stop(self.client) };
-        if let Some(context) = self.context.take() {
-            if !stopped {
-                // Keep callback memory live when Apple cannot confirm client destruction.
-                eprintln!("macOS file enforcement teardown failed");
-                Box::leak(context);
-                return;
-            }
-            let tracker = context.tracker.lock().unwrap_or_else(|e| e.into_inner());
-            eprintln!(
-                "macOS file enforcement stopped: allowed={}, denied={}, notifications={}",
-                tracker.allowed, tracker.denied, tracker.notifications
-            );
+        if let Err(error) = self.stop() {
+            eprintln!("{error}");
         }
     }
 }

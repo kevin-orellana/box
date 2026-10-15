@@ -456,7 +456,7 @@ pub(crate) struct HostedBox {
     /// The broker serving this box's aliases.
     broker: Option<BrokerHost>,
 
-    #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
     _file_monitor: Option<super::macos_enforcement::FileMonitor>,
 
     /// A fatal cross-door completion verdict from the discovery coordinator,
@@ -666,20 +666,15 @@ impl HostedBox {
             ))
         });
         let broker_listener = BrokerHost::bind(root)?;
-        #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+        #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
         let file_monitor = if record.experimental_features.native_filesystem_policy {
-            Some(
-                super::macos_enforcement::FileMonitor::start(
-                    Arc::clone(&policy),
-                    Arc::clone(&recorder),
-                    root.name(),
-                    &crate::record::layout::operator_home_directory()?,
-                    coordinator_fatal_sender.clone(),
-                )
-                .map_err(|error| crate::error::SuperviseError::Control {
-                    reason: format!("macOS file enforcement could not start: {error}"),
-                })?,
-            )
+            Some(super::macos_enforcement::FileMonitor::start(
+                Arc::clone(&policy),
+                Arc::clone(&recorder),
+                root.name(),
+                &crate::record::layout::operator_home_directory()?,
+                coordinator_fatal_sender.clone(),
+            )?)
         } else {
             None
         };
@@ -702,7 +697,7 @@ impl HostedBox {
         Ok(Self {
             discovery: Some(discovery),
             broker: Some(broker),
-            #[cfg(all(target_os = "macos", feature = "kernel-policy-integration"))]
+            #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
             _file_monitor: file_monitor,
             coordinator_fatal,
             _proxy: proxy,
@@ -735,6 +730,21 @@ impl HostedBox {
     /// The filesystem reach this run judged for every process table.
     pub(crate) fn approved(&self) -> &ApprovedReach {
         &self.approved
+    }
+
+    pub(crate) fn stop_native(&mut self) -> Result<(), BoxError> {
+        #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+        if self._file_monitor.is_some() {
+            if let Some(discovery) = &self.discovery {
+                discovery.close();
+            }
+            drop(self.broker.take());
+            drop(self.discovery.take());
+            if let Some(mut monitor) = self._file_monitor.take() {
+                monitor.stop()?;
+            }
+        }
+        Ok(())
     }
 
     /// Wait until this box's broker stops, and answer why.

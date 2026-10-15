@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <libproc.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stddef.h>
 
 enum { BOX_OPEN = 1, BOX_CREATE, BOX_UNLINK, BOX_RENAME, BOX_TRUNCATE };
 enum { BOX_AUTH = 1, BOX_NOTIFY, BOX_REPLY };
@@ -25,16 +31,39 @@ typedef struct {
 } box_event;
 
 typedef bool (*box_callback)(void *, const box_event *, int);
+typedef struct box_process {
+    audit_token_t token;
+    struct box_process *next;
+} box_process;
+
 typedef struct {
     es_client_t *client;
     void *context;
     box_callback callback;
+    dispatch_queue_t work;
+    dispatch_group_t jobs;
+    pthread_mutex_t processes_lock;
+    box_process *processes;
+    _Atomic bool stopping, failed;
+    _Atomic size_t queued;
 } box_client;
 
 size_t box_es_event_size(void) { return sizeof(box_event); }
-bool box_es_stop(void *raw);
+size_t box_es_event_offset(size_t field) {
+    const size_t offsets[] = {offsetof(box_event, kind), offsetof(box_event, phase), offsetof(box_event, flags), offsetof(box_event, mode), offsetof(box_event, sequence), offsetof(box_event, deadline), offsetof(box_event, pid), offsetof(box_event, valid), offsetof(box_event, source_dev), offsetof(box_event, source_ino), offsetof(box_event, destination_dev), offsetof(box_event, destination_ino), offsetof(box_event, source_identity), offsetof(box_event, destination_identity), offsetof(box_event, destination_exists), offsetof(box_event, destination_mode), offsetof(box_event, result), offsetof(box_event, path), offsetof(box_event, destination)};
+    return field < sizeof(offsets) / sizeof(*offsets) ? offsets[field] : SIZE_MAX;
+}
+int box_es_stop(void *raw);
+
+bool box_es_has_children(pid_t process) {
+    pid_t child;
+    return proc_listchildpids(process, &child, sizeof(child)) != 0;
+}
 
 #if defined(__MAC_27_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_27_0
+
+/* libproc omits availability metadata for this newer entry point. */
+extern int proc_signal_with_audittoken(audit_token_t *, int) __attribute__((weak_import));
 
 static bool copy_token(char *out, es_string_token_t token) {
     if (!token.data || token.length == 0 || token.length >= BOX_PATH_CAPACITY ||
@@ -126,31 +155,87 @@ static bool decode(const es_message_t *message, box_event *out) {
     }
 }
 
+static void fail(box_client *owner, const box_event *event) {
+    if (!atomic_exchange(&owner->failed, true)) owner->callback(owner->context, event, 4);
+}
+
+static void observe_process(box_client *owner, audit_token_t token, bool exited) {
+    pid_t pid = audit_token_to_pid(token);
+    if (pid == getpid() || pid <= 0) return;
+    pthread_mutex_lock(&owner->processes_lock);
+    box_process **entry = &owner->processes;
+    while (*entry && audit_token_to_pid((*entry)->token) != pid) entry = &(*entry)->next;
+    if (exited) {
+        if (*entry) {
+            box_process *old = *entry;
+            *entry = old->next;
+            free(old);
+        }
+    } else {
+        if (!*entry) *entry = calloc(1, sizeof(**entry));
+        if (*entry) (*entry)->token = token;
+        if (!*entry || atomic_load(&owner->stopping)) {
+            (void)proc_signal_with_audittoken(&token, SIGKILL);
+        }
+        if (!*entry) {
+            box_event event = {0};
+            fail(owner, &event);
+        }
+    }
+    pthread_mutex_unlock(&owner->processes_lock);
+}
+
+static es_respond_result_t respond(es_client_t *client, const es_message_t *message,
+                                   uint32_t flags, bool allow) {
+    if (message->event_type == ES_EVENT_TYPE_AUTH_OPEN)
+        return es_respond_flags_result(client, message, allow ? flags : 0, false);
+    return es_respond_auth_result(client, message,
+        allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY, false);
+}
+
 static void receive(box_client *owner, es_client_t *client, const es_message_t *message) {
+    observe_process(owner, message->process->audit_token,
+                    message->event_type == ES_EVENT_TYPE_NOTIFY_EXIT);
+    if (message->event_type == ES_EVENT_TYPE_NOTIFY_FORK)
+        observe_process(owner, message->event.fork.child->audit_token, false);
+    if (message->event_type == ES_EVENT_TYPE_NOTIFY_EXEC)
+        observe_process(owner, message->event.exec.target->audit_token, false);
     box_event event = {0};
     event.phase = message->action_type == ES_ACTION_TYPE_AUTH ? BOX_AUTH : BOX_NOTIFY;
     event.pid = audit_token_to_pid(message->process->audit_token);
     event.deadline = message->deadline;
-    /* Version four supplies the global sequence number on this macOS 27 path. */
     event.sequence = message->version >= 4 ? message->global_seq_num : 0;
     event.valid = message->version >= 4 && decode(message, &event);
-    if (event.phase == BOX_NOTIFY) {
-        /* This is an authorization result, not proof of syscall completion. */
-        event.result = message->action.notify.result_type;
-        owner->callback(owner->context, &event, 0);
+    if (atomic_load(&owner->stopping) || atomic_load(&owner->failed)) {
+        if (event.phase == BOX_AUTH) (void)respond(client, message, event.flags, false);
         return;
     }
-    bool allow = owner->callback(owner->context, &event, 0);
-    if (mach_absolute_time() >= event.deadline) allow = false;
-    es_respond_result_t result;
-    if (message->event_type == ES_EVENT_TYPE_AUTH_OPEN) {
-        result = es_respond_flags_result(client, message, allow ? event.flags : 0, false);
-    } else {
-        result = es_respond_auth_result(client, message,
-            allow ? ES_AUTH_RESULT_ALLOW : ES_AUTH_RESULT_DENY, false);
+    if (atomic_fetch_add(&owner->queued, 1) >= 1024) {
+        atomic_fetch_sub(&owner->queued, 1);
+        if (event.phase == BOX_AUTH) (void)respond(client, message, event.flags, false);
+        fail(owner, &event);
+        return;
     }
-    event.phase = BOX_REPLY;
-    owner->callback(owner->context, &event, result == ES_RESPOND_RESULT_SUCCESS ? 0 : 1);
+    es_retain_message(message);
+    dispatch_group_async(owner->jobs, owner->work, ^{
+        box_event delivered = event;
+        if (atomic_load(&owner->stopping) || atomic_load(&owner->failed)) {
+            if (delivered.phase == BOX_AUTH) (void)respond(client, message, delivered.flags, false);
+        } else if (delivered.phase == BOX_NOTIFY) {
+            owner->callback(owner->context, &delivered, 0);
+        } else {
+            bool allow = owner->callback(owner->context, &delivered, 0);
+            if (mach_absolute_time() >= delivered.deadline || atomic_load(&owner->stopping) ||
+                atomic_load(&owner->failed)) allow = false;
+            es_respond_result_t result = respond(client, message, delivered.flags, allow);
+            delivered.phase = BOX_REPLY;
+            delivered.result = allow;
+            owner->callback(owner->context, &delivered,
+                            result == ES_RESPOND_RESULT_SUCCESS ? 0 : 1);
+        }
+        es_release_message(message);
+        atomic_fetch_sub(&owner->queued, 1);
+    });
 }
 
 static const es_event_type_t subscriptions[] = {
@@ -162,66 +247,129 @@ static const es_event_type_t subscriptions[] = {
     ES_EVENT_TYPE_NOTIFY_CLOSE, ES_EVENT_TYPE_NOTIFY_WRITE
 };
 
+API_AVAILABLE(macos(27.0))
+static bool configure_mutes(es_client_t *client) {
+    es_muted_paths_t *paths = NULL;
+    if (es_muted_paths_events(client, &paths) != ES_RETURN_SUCCESS) return false;
+    bool valid = true;
+    for (size_t i = 0; i < paths->count && valid; ++i) {
+        const es_muted_path_t *path = &paths->paths[i];
+        es_event_type_t selected[sizeof(subscriptions) / sizeof(*subscriptions)];
+        size_t count = 0;
+        for (size_t j = 0; j < path->event_count; ++j)
+            for (size_t k = 0; k < sizeof(subscriptions) / sizeof(*subscriptions); ++k)
+                if (path->events[j] == subscriptions[k]) selected[count++] = subscriptions[k];
+        char name[BOX_PATH_CAPACITY];
+        if (count) valid = copy_token(name, path->path) &&
+            es_unmute_path_events(client, name, path->type, selected, (uint32_t)count) == ES_RETURN_SUCCESS;
+    }
+    es_release_muted_paths(paths);
+    paths = NULL;
+    if (!valid || es_muted_paths_events(client, &paths) != ES_RETURN_SUCCESS) return false;
+    for (size_t i = 0; i < paths->count; ++i)
+        for (size_t j = 0; j < paths->paths[i].event_count; ++j)
+            for (size_t k = 0; k < sizeof(subscriptions) / sizeof(*subscriptions); ++k)
+                if (paths->paths[i].events[j] == subscriptions[k]) valid = false;
+    es_release_muted_paths(paths);
+    es_muted_processes_t *processes = NULL;
+    if (es_muted_processes_events(client, &processes) != ES_RETURN_SUCCESS) return false;
+    valid &= processes->count == 0;
+    es_release_muted_processes(processes);
+    return valid;
+}
+
+API_AVAILABLE(macos(27.0))
+static bool synchronized(box_client *owner, dispatch_time_t deadline) {
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_retain(done);
+    es_return_t result = es_sync_client(owner->client, ^{
+        dispatch_semaphore_signal(done);
+        dispatch_release(done);
+    });
+    bool success = result == ES_RETURN_SUCCESS;
+    if (success) success = dispatch_semaphore_wait(done, deadline) == 0;
+    else dispatch_release(done);
+    dispatch_release(done);
+    return success;
+}
+
 /* Negative errors belong to this bridge. Positive errors are es_new_client_result_t. */
 void *box_es_start(void *context, box_callback callback, int *error) {
     *error = -1;
     if (__builtin_available(macOS 27.0, *)) {
+        if (!proc_signal_with_audittoken) return NULL;
         box_client *owner = calloc(1, sizeof(*owner));
         if (!owner) { *error = -2; return NULL; }
         owner->context = context;
         owner->callback = callback;
+        owner->work = dispatch_queue_create("box.native-filesystem-policy", DISPATCH_QUEUE_SERIAL);
+        owner->jobs = dispatch_group_create();
+        if (pthread_mutex_init(&owner->processes_lock, NULL)) abort();
         *error = es_new_descendants_client(&owner->client,
             ^(es_client_t *client, const es_message_t *message) { receive(owner, client, message); });
-        if (*error != ES_NEW_CLIENT_RESULT_SUCCESS) { free(owner); return NULL; }
-        es_deadline_miss_mode_t mode;
-        if (es_set_deadline_miss_mode(owner->client, ES_DEADLINE_MISS_MODE_FAIL_CLOSED) != ES_RETURN_SUCCESS ||
-            es_get_deadline_miss_mode(owner->client, &mode) != ES_RETURN_SUCCESS ||
-            mode != ES_DEADLINE_MISS_MODE_FAIL_CLOSED) {
-            *error = -3;
-            es_delete_client(owner->client);
+        if (*error == ES_NEW_CLIENT_RESULT_SUCCESS) {
+            es_deadline_miss_mode_t mode;
+            if (box_es_has_children(getpid())) *error = -7;
+            else if (!configure_mutes(owner->client)) *error = -6;
+            else if (es_set_deadline_miss_mode(owner->client, ES_DEADLINE_MISS_MODE_FAIL_CLOSED) != ES_RETURN_SUCCESS ||
+                es_get_deadline_miss_mode(owner->client, &mode) != ES_RETURN_SUCCESS ||
+                mode != ES_DEADLINE_MISS_MODE_FAIL_CLOSED) *error = -3;
+            else {
+                size_t expected = sizeof(subscriptions) / sizeof(subscriptions[0]);
+                es_event_type_t *actual = NULL;
+                size_t count = 0;
+                bool valid = es_subscribe(owner->client, subscriptions, (uint32_t)expected) == ES_RETURN_SUCCESS &&
+                    es_subscriptions(owner->client, &count, &actual) == ES_RETURN_SUCCESS && count == expected;
+                for (size_t i = 0; valid && i < expected; ++i) {
+                    bool found = false;
+                    for (size_t j = 0; j < count; ++j) found |= subscriptions[i] == actual[j];
+                    valid &= found;
+                }
+                free(actual);
+                if (valid) { *error = 0; return owner; }
+                *error = -4;
+            }
+            if (box_es_stop(owner) != 0) abort();
+        } else {
+            dispatch_release(owner->work);
+            dispatch_release(owner->jobs);
+            pthread_mutex_destroy(&owner->processes_lock);
             free(owner);
-            return NULL;
         }
-        size_t expected = sizeof(subscriptions) / sizeof(subscriptions[0]);
-        es_event_type_t *actual = NULL;
-        size_t count = 0;
-        bool valid = es_subscribe(owner->client, subscriptions, (uint32_t)expected) == ES_RETURN_SUCCESS &&
-            es_subscriptions(owner->client, &count, &actual) == ES_RETURN_SUCCESS && count == expected;
-        for (size_t i = 0; valid && i < expected; ++i) {
-            bool found = false;
-            for (size_t j = 0; j < count; ++j) found |= subscriptions[i] == actual[j];
-            valid &= found;
-        }
-        free(actual);
-        if (!valid) {
-            *error = -4;
-            /* Drain even supervisor notifications before releasing Rust's context. */
-            if (!box_es_stop(owner)) abort();
-            return NULL;
-        }
-        *error = 0;
-        return owner;
     }
     return NULL;
 }
 
-bool box_es_stop(void *raw) {
+int box_es_stop(void *raw) {
     if (__builtin_available(macOS 27.0, *)) {
         box_client *owner = raw;
-        if (es_unsubscribe_all(owner->client) != ES_RETURN_SUCCESS) return false;
-        dispatch_semaphore_t drained = dispatch_semaphore_create(0);
-        if (es_sync_client(owner->client, ^{ dispatch_semaphore_signal(drained); }) != ES_RETURN_SUCCESS) {
-            dispatch_release(drained);
-            return false;
+        atomic_store(&owner->stopping, true);
+        dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+        for (;;) {
+            if (!synchronized(owner, deadline)) return 1;
+            pthread_mutex_lock(&owner->processes_lock);
+            bool empty = owner->processes == NULL;
+            bool signaled = true;
+            for (box_process *entry = owner->processes; entry; entry = entry->next) {
+                int result = proc_signal_with_audittoken(&entry->token, SIGKILL);
+                if (result != 0 && errno != ESRCH) signaled = false;
+            }
+            pthread_mutex_unlock(&owner->processes_lock);
+            if (empty) break;
+            if (!signaled || dispatch_time(DISPATCH_TIME_NOW, 0) >= deadline) return 2;
+            usleep(1000);
         }
-        /* The marker drains handlers before context destruction. */
-        dispatch_semaphore_wait(drained, DISPATCH_TIME_FOREVER);
-        dispatch_release(drained);
-        if (es_delete_client(owner->client) != ES_RETURN_SUCCESS) return false;
+        if (dispatch_group_wait(owner->jobs, deadline) != 0) return 3;
+        if (es_unsubscribe_all(owner->client) != ES_RETURN_SUCCESS) return 4;
+        if (!synchronized(owner, deadline)) return 5;
+        if (es_delete_client(owner->client) != ES_RETURN_SUCCESS) return 6;
+        dispatch_release(owner->work);
+        dispatch_release(owner->jobs);
+        pthread_mutex_destroy(&owner->processes_lock);
         free(owner);
-        return true;
+        return 0;
     }
-    return false;
+    return 7;
 }
 
 #else
@@ -233,9 +381,9 @@ void *box_es_start(void *context, box_callback callback, int *error) {
     return NULL;
 }
 
-bool box_es_stop(void *raw) {
+int box_es_stop(void *raw) {
     (void)raw;
-    return false;
+    return 7;
 }
 
 #endif

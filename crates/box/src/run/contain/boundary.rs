@@ -775,7 +775,7 @@ struct DisclosureInputs<'a> {
     native_filesystem_policy: bool,
 }
 
-/// The text a box prints for one spec: every grant no policy decision covers, Core's own additions,
+/// The text a box prints for one spec: its grants, selected policy checks, Core's own additions,
 /// and the effective `HOME` and `PATH`.
 fn disclosure(inputs: &DisclosureInputs<'_>) -> String {
     let table = inputs.table;

@@ -314,6 +314,11 @@ impl RunContract {
         })
     }
 
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    pub(crate) fn experimental_features(&self) -> &ExperimentalFeatures {
+        &self.file.experimental_features
+    }
+
     pub(crate) fn box_directory(&self) -> &Path {
         &self.box_directory
     }
@@ -549,7 +554,7 @@ pub(crate) struct Record {
     pub(crate) telemetry: BTreeMap<String, telemetry::TelemetryEntry>,
 }
 
-/// The record format this build writes and accepts: version 21 adds `network` to each
+/// The ordinary record format; native enforcement uses version 22. Version 21 adds `network` to each
 /// `[tool.<name>]`, and stores a stdio MCP server's network in its spec's `network`, where version
 /// 20 kept a separate `native_egress` flag on `ContainedMcp`. Version 20 names a secret's injection mode
 /// `secret.inject`, taking `phantom` or `always`, where version 19 took `secret.phantom` with
@@ -589,7 +594,7 @@ impl ExperimentalFeatures {
         if self.native_filesystem_policy
             && !cfg!(all(
                 target_os = "macos",
-                feature = "kernel-policy-integration"
+                feature = "native-filesystem-policy"
             ))
         {
             return Err(ConfigError::ExperimentalFeatureUnavailable {
@@ -840,7 +845,6 @@ impl Record {
                 expected,
             });
         }
-        record.experimental_features.validate()?;
         if !valid_box_identity(&record.box_id) {
             return Err(ConfigError::RecordIdentity {
                 found: record.box_id,
@@ -1242,7 +1246,7 @@ mod tests {
         );
         if cfg!(all(
             target_os = "macos",
-            feature = "kernel-policy-integration"
+            feature = "native-filesystem-policy"
         )) {
             assert!(
                 enabled
@@ -1279,17 +1283,7 @@ mod tests {
         ordinary.version = EXPERIMENTAL_RECORD_VERSION;
         let encoded = toml::to_string(&ordinary).unwrap();
         let restored = Record::parse(&encoded, Path::new("record.toml"));
-        if cfg!(all(
-            target_os = "macos",
-            feature = "kernel-policy-integration"
-        )) {
-            assert_eq!(restored.unwrap(), ordinary);
-        } else {
-            assert!(matches!(
-                restored,
-                Err(ConfigError::ExperimentalFeatureUnavailable { .. })
-            ));
-        }
+        assert_eq!(restored.unwrap(), ordinary);
     }
 
     // ── The four inputs ────────────────────────────────────────────────────────

@@ -82,7 +82,6 @@ The file carries nine keys. `name` and `box_dir` are required.
 | `[telemetry.<label>]` | tables | Where this box's decision records and agent spans go. |
 | `[experimental-features]` | table | Optional native filesystem policy checks. Disabled by default. |
 
-
 The example uses five of the nine: `name`, `box_dir`, `policy`, `[agent]`, and one
 `[egress.<name>]` table. It declares no tool, no MCP server, and no telemetry target.
 

@@ -72,7 +72,7 @@ constrains what the program does.
 ### Native filesystem policy requires explicit selection
 
 On October 14, 2026, the operator approved isolation of native filesystem interception under `experimental-features`.
-The `kernel-policy-integration` Cargo feature includes the adapter but does not activate it.
+The `native-filesystem-policy` Cargo feature includes the adapter but does not activate it.
 `[experimental-features] native-filesystem-policy = true` selects it for one box.
 Standard release builds exclude the adapter. Unsupported selections refuse startup before workload execution.
 

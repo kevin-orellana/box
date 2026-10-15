@@ -224,6 +224,10 @@ fn prepare(config: &Path, argv: &[OsString]) -> Result<LockedRun, BoxError> {
         source,
     })?;
     let contract = RunContract::read(config, &invocation)?;
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    if contract.experimental_features().native_filesystem_policy {
+        crate::run::macos_enforcement::preflight()?;
+    }
     contract.validate_declared_directory()?;
     let (mut root, root_lock) = BoxRoot::lock_directory(contract.box_directory())?;
     contract.validate_directory(root.root())?;

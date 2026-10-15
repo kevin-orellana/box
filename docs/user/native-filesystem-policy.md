@@ -10,7 +10,7 @@ Endpoint Security is the macOS interface that lets a client decide selected oper
 Build the product and its helpers:
 
 ```sh
-cargo build --release --locked -p strands-box -p strands-box-containment --features kernel-policy-integration
+cargo build --release --locked -p strands-box -p strands-box-containment --features native-filesystem-policy
 ```
 
 Sign the product bundle with an identity and provisioning profile that permit `com.apple.developer.endpoint-security.client`.
@@ -37,11 +37,14 @@ Accepted authorization replies produce `indeterminate` outcomes. These records c
 
 An existing open file descriptor can still carry later reads or writes without another open request.
 This experiment does not revoke existing descriptors or intercept every filesystem operation.
-The tests do not establish enforcement after the trusted Box process exits or crashes.
-Detached descendants and teardown require further review before production use.
-Shutdown waits for callbacks without a timeout.
-The adapter verifies subscriptions but does not inspect default event muting.
-The initial mute state of a descendants client needs verification before claiming complete coverage for the selected operations.
+Shutdown terminates tracked descendants, including detached children, before interception stops.
+It uses a five-second deadline for descendant cleanup and callback draining.
+Startup checks subscriptions and removes path mutes that would suppress required events.
+It refuses startup if required events remain muted or any process mute exists.
+
+The signed tests cover detached-child cleanup and durable history across mode changes.
+They do not establish enforcement after the trusted Box process crashes or validate every shutdown failure.
+Production use still requires further review and tests for those failures.
 
 ## Stored configuration and rollback
 

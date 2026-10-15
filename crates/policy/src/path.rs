@@ -148,9 +148,7 @@ pub enum PathRefusal {
 /// is consulted. The resolver holds no policy authority: it decides reachability, and
 /// policy decides permission.
 ///
-/// The two `approve_*` methods differ only in the namespace they resolve in, because
-/// the two interpreters do not share one. `std::fs::canonicalize` answers in the
-/// **host** namespace, which is the wrong one for a script path.
+/// Host approval follows the whole path or only its parent; virtual approval performs no host I/O.
 #[derive(Debug, Clone)]
 pub struct PathResolver {
     roots: Vec<PathBuf>,
@@ -364,6 +362,26 @@ mod tests {
                 .is_err()
         );
         assert!(resolver.approve_host_entry(&root_path.join("new")).is_ok());
+    }
+
+    #[test]
+    fn entry_approval_requires_an_absolute_name_under_an_existing_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let resolver = PathResolver::over([root.clone()]).unwrap();
+        for path in [
+            PathBuf::from("relative"),
+            PathBuf::from("/"),
+            root.join("missing/leaf"),
+        ] {
+            assert!(resolver.approve_host_entry(&path).is_err(), "{path:?}");
+        }
+        let existing = root.join("existing");
+        std::fs::write(&existing, "content").unwrap();
+        assert_eq!(
+            resolver.approve_host_entry(&existing).unwrap().as_path(),
+            existing
+        );
     }
 
     fn resolver(root: &str) -> PathResolver {

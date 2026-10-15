@@ -1,12 +1,42 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 static int operation(const char *name, const char *from, const char *to) {
+    if (!strcmp(name, "detached")) {
+        int ready[2];
+        if (pipe(ready)) return -1;
+        pid_t child = fork();
+        if (child < 0) return -1;
+        if (!child) {
+            alarm(15);
+            close(ready[0]);
+            if (setsid() < 0) _exit(95);
+            int file = open(from, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (file < 0) _exit(96);
+            char pid[32];
+            int length = snprintf(pid, sizeof(pid), "%d", getpid());
+            if (write(file, pid, (size_t)length) != length) _exit(97);
+            close(file);
+            close(STDOUT_FILENO);
+            close(STDERR_FILENO);
+            if (write(ready[1], "R", 1) != 1) _exit(98);
+            close(ready[1]);
+            for (;;) pause();
+        }
+        close(ready[1]);
+        char marker;
+        int result = read(ready[0], &marker, 1) == 1 ? 0 : -1;
+        close(ready[0]);
+        return result;
+    }
+
     if (!strcmp(name, "write-twice")) {
         if (operation("write", from, to) != 0) return -1;
         errno = 0;
@@ -35,8 +65,12 @@ static int operation(const char *name, const char *from, const char *to) {
     if (!strcmp(name, "read")) {
         int fd = open(from, O_RDONLY);
         if (fd < 0) return -1;
+        char byte;
+        int result = read(fd, &byte, 1) >= 0 ? 0 : -1;
+        int error = errno;
         close(fd);
-        return 0;
+        errno = error;
+        return result;
     }
     if (!strcmp(name, "event-only")) {
         int fd = open(from, O_EVTONLY | O_CLOEXEC);

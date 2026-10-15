@@ -7,7 +7,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
     println!("cargo:rerun-if-changed=src/run/macos_enforcement/bridge.c");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-        || std::env::var_os("CARGO_FEATURE_KERNEL_POLICY_INTEGRATION").is_none()
+        || std::env::var_os("CARGO_FEATURE_NATIVE_FILESYSTEM_POLICY").is_none()
     {
         return;
     }

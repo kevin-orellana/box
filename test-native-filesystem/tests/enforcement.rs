@@ -434,3 +434,78 @@ when { context.input.path like "*/protected" };"#,
         b"original"
     );
 }
+
+#[test]
+fn shutdown_ends_a_descendant_outside_the_original_process_group() {
+    let fixture = Fixture::new(PERMIT, true);
+    fixture.run("detached", "detached.pid", "-", "allow", false);
+    let pid: u32 = std::fs::read_to_string(fixture.workspace.join("detached.pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let alive = Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        if !alive {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant {pid} outlived Box"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn disabling_and_reenabling_native_checks_preserves_history() {
+    let fixture = Fixture::new(
+        r#"
+permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:write", resource)
+when { context.input.path == "~/workspace/once" }
+when temporal {
+    formerly within 300s (
+        Box::Action::"fs:write"::response{
+            input.path: "~/workspace/once",
+            output.result: Box::FsResponseResult::"indeterminate"
+        }
+    )
+};
+"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("once"), "original").unwrap();
+    fixture.run("write", "once", "-", "allow", false);
+    let record_path = fixture.root.join("box/private/box.toml");
+    let version = || {
+        let value: toml::Value = std::fs::read_to_string(&record_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        value["version"].as_integer().unwrap()
+    };
+    assert_eq!(version(), 22);
+    let command = fixture.command("read", "once", "-", "allow", false);
+    let config_path = fixture.root.join("box.toml");
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        config_path,
+        text.replace(
+            "native-filesystem-policy = true",
+            "native-filesystem-policy = false",
+        ),
+    )
+    .unwrap();
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(version(), 21);
+    fixture.run("write", "once", "-", "deny", false);
+    assert_eq!(version(), 22);
+}

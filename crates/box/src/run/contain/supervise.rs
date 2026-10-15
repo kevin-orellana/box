@@ -427,6 +427,7 @@ impl Contained {
             let _ = self.group.stop().await;
         }
         let termination_result = self.group.release().await;
+        let native_result = self.hosted.stop_native();
         // A piped run never claimed the terminal, so there is nothing to give back.
         let terminal_result = match self.terminal.as_mut() {
             Some(terminal) => terminal.restore(),
@@ -443,6 +444,7 @@ impl Contained {
             Completion::Hosted(failure) => return Err(failure),
         };
         termination_result?;
+        native_result?;
         terminal_result?;
         // A setup failure outranks the status: `exit 3` from a refused apply is
         // the trampoline's, not the workload's.

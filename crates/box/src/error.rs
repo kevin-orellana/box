@@ -91,6 +91,41 @@ pub(crate) enum Internal {
 
     #[error(transparent)]
     McpDiscovery(#[from] McpDiscoveryError),
+
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    #[error(transparent)]
+    NativeFilesystem(#[from] NativeFilesystemError),
+}
+
+#[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NativeFilesystemError {
+    #[error("native filesystem policy requires macOS 27 or later")]
+    Runtime,
+    #[error("native filesystem policy requires a build with the macOS 27 SDK or later")]
+    Sdk,
+    #[error("native filesystem policy could not allocate its client")]
+    Allocation,
+    #[error("native filesystem policy could not confirm kernel deadline handling")]
+    Deadlines,
+    #[error("native filesystem policy could not confirm its event subscriptions")]
+    Subscriptions,
+    #[error("native filesystem policy requires startup before any child process exists")]
+    ExistingChildren,
+    #[error("native filesystem policy could not confirm its event mute settings")]
+    Muting,
+    #[error(
+        "native filesystem policy client creation failed (Endpoint Security code {code}); verify the binary's signature and entitlement"
+    )]
+    Client { code: i32 },
+    #[error("native filesystem policy path setup failed: {source}")]
+    Paths { source: policy::PathRefusal },
+    #[error(
+        "native filesystem policy shutdown failed (bridge code {code}); callback memory remains retained"
+    )]
+    Shutdown { code: i32 },
+    #[error("native filesystem policy stopped: {reason}")]
+    Callback { reason: String },
 }
 
 /// Runtime MCP discovery could not preserve its lifecycle.
@@ -157,7 +192,7 @@ pub(crate) enum RelayError {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConfigError {
     #[error(
-        "experimental feature `{feature}` requires a macOS build with `kernel-policy-integration`"
+        "experimental feature `{feature}` requires a macOS build with `native-filesystem-policy`"
     )]
     ExperimentalFeatureUnavailable { feature: &'static str },
 
