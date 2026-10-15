@@ -30,6 +30,15 @@ async fn spawn_registered(
         }
         .into());
     }
+    if let Some(registration) = &registration {
+        registration
+            .prepare_bootstrap(
+                trampoline
+                    .bootstrap()
+                    .map_err(|source| SuperviseError::Spawn { source })?,
+            )
+            .map_err(|source| SuperviseError::Spawn { source })?;
+    }
     let mut group = ProcessGroup::spawn(command).await?;
     if let (Some(gate), Some(registration)) = (gate, registration) {
         let pid = group.leader_pid()?;

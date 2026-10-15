@@ -172,6 +172,32 @@ Record the source revision, source changes, and signed executable hash beside th
 The test package requires the binary path and bounds each workload to 60 seconds.
 Ordinary workspace tests do not need a signing identity.
 
+The required native CI job builds the feature and runs adapter and configuration tests.
+It also checks a manual signed-run receipt against the current source files.
+This receipt records a local run; it does not provide an independent signing runner.
+On a hosted runner with an older SDK, the build checks the unsupported-platform code.
+The signed macOS 27 run covers the active kernel bridge.
+
+Before building and signing, save the source snapshot:
+
+```sh
+python3 test-native-filesystem/receipt.py --snapshot /absolute/path/before.json
+```
+
+Capture the complete signed test output. Do not use a test filter:
+
+```sh
+STRANDS_BOX_SIGNED_TEST_BINARY=/absolute/path/KernelBox.app/Contents/MacOS/strands-box \
+  cargo test --manifest-path test-native-filesystem/Cargo.toml --locked \
+  -- --test-threads=1 > /absolute/path/native-tests.log 2>&1
+python3 test-native-filesystem/receipt.py \
+  --record /absolute/path/native-tests.log \
+  --binary /absolute/path/KernelBox.app/Contents/MacOS/strands-box \
+  --before /absolute/path/before.json
+```
+
+Review the receipt with the test log. Relevant source changes require a new build and signed run.
+
 ## Run real-agent workloads
 
 Select `test-workload/workload-native-filesystem` explicitly. It is outside the default workload matrix.

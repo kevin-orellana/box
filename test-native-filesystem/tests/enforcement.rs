@@ -545,6 +545,58 @@ fn tool_selection(fixture: &Fixture, name: &str, operation: &str, mode: Option<b
 }
 
 #[test]
+fn disabled_agent_starts_under_a_restrictive_bootstrap_policy() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:read", resource)
+when { context.input.path == "/" || context.input.path like "*/protected" };"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+    let command = fixture.command("read", "protected", "-", "allow", false);
+    process_selection(&fixture, false, "");
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+    let output = bounded_output(fixture.command("read", "protected", "-", "deny", false));
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn disabled_tools_start_under_a_restrictive_bootstrap_policy() {
+    let fixture = Fixture::new(
+        r#"permit(principal, action, resource);
+forbid(principal, action == Box::Action::"fs:read", resource)
+when { context.input.path == "/" || context.input.path like "*/protected" };"#,
+        true,
+    );
+    std::fs::write(fixture.workspace.join("protected"), "original").unwrap();
+    let read = format!(
+        "'{}' read protected - allow child-exec",
+        fixture.probe.display()
+    );
+    let command = fixture.command("shells", &read, &read, "allow", false);
+    process_selection(
+        &fixture,
+        false,
+        &tool_selection(&fixture, "read", "read", Some(false)),
+    );
+    let output = bounded_output(command);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("macOS file request denied"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn independent_agent_and_tool_modes_survive_concurrent_forks_and_exec() {
     let fixture = Fixture::new(
         r#"permit(principal, action, resource);

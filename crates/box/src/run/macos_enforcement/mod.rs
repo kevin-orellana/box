@@ -55,7 +55,10 @@ unsafe extern "C" {
         context: *mut c_void,
         callback: unsafe extern "C" fn(*mut c_void, *const RawEvent, i32) -> bool,
         error: *mut i32,
+        parent_dev: u64,
+        parent_ino: u64,
     ) -> *mut c_void;
+    fn box_es_prepare_bootstrap(client: *mut c_void, device: u64, inode: u64) -> bool;
     fn box_es_set_process_mode(client: *mut c_void, pid: i32, mediated: bool) -> bool;
     fn box_es_stop(client: *mut c_void) -> i32;
     #[cfg(test)]
@@ -318,14 +321,9 @@ impl Context {
         );
     }
 
-    fn failed(&self, tracker: &mut Tracker, reason: impl Into<String>) {
+    fn failed(&self, tracker: &mut Tracker, error: NativeFilesystemError) {
         tracker.failed = true;
-        let _ = self.fatal.send(
-            NativeFilesystemError::Callback {
-                reason: reason.into(),
-            }
-            .into(),
-        );
+        let _ = self.fatal.send(error.into());
     }
 
     fn decide(&self, event: &RawEvent, pending: &mut Vec<PendingDecision>) -> io::Result<()> {
@@ -368,10 +366,7 @@ impl Context {
         let mut tracker = self.tracker.lock().unwrap_or_else(|e| e.into_inner());
         if event.phase == REPLY {
             if status != 0 {
-                self.failed(
-                    &mut tracker,
-                    "authorization reply failed or missed its deadline",
-                );
+                self.failed(&mut tracker, NativeFilesystemError::Reply);
             }
             let allowed = status == 0 && event.result == 1 && tracker.refusal.is_none();
             let refusal = tracker
@@ -425,17 +420,14 @@ impl Context {
                 {
                     self.failed(
                         &mut tracker,
-                        format!("recording authorization outcome: {error}"),
+                        NativeFilesystemError::Outcome { source: error },
                     );
                 }
             }
             return false;
         }
         if !tracker.sequence(event.sequence) {
-            self.failed(
-                &mut tracker,
-                "Endpoint Security dropped or reordered messages",
-            );
+            self.failed(&mut tracker, NativeFilesystemError::Sequence);
         }
         if event.phase == NOTIFY {
             tracker.notifications += 1;
@@ -487,12 +479,7 @@ unsafe extern "C" fn receive(context: *mut c_void, event: *const RawEvent, statu
     let context = unsafe { &*context.cast::<Context>() };
     let event = unsafe { &*event };
     if status == 4 {
-        let _ = context.fatal.send(
-            NativeFilesystemError::Callback {
-                reason: "event queue or process tracking failed".into(),
-            }
-            .into(),
-        );
+        let _ = context.fatal.send(NativeFilesystemError::Tracking.into());
         return false;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -500,7 +487,7 @@ unsafe extern "C" fn receive(context: *mut c_void, event: *const RawEvent, statu
     }))
     .unwrap_or_else(|_| {
         let mut tracker = context.tracker.lock().unwrap_or_else(|e| e.into_inner());
-        context.failed(&mut tracker, "callback panicked");
+        context.failed(&mut tracker, NativeFilesystemError::Panic);
         false
     })
 }
@@ -513,6 +500,21 @@ unsafe impl Send for Client {}
 pub(crate) struct Registration(Arc<Mutex<Client>>);
 
 impl Registration {
+    pub(crate) fn prepare_bootstrap(&self, executable: &std::fs::File) -> io::Result<()> {
+        let identity = executable.metadata()?;
+        let client = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("native client lock failed"))?;
+        // SAFETY: the lock excludes shutdown; the file is the verified private helper image.
+        if client.0.is_null()
+            || !unsafe { box_es_prepare_bootstrap(client.0, identity.dev(), identity.ino()) }
+        {
+            return Err(io::Error::other("native bootstrap identity refused"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_mode(&self, pid: i32, mediated: bool) -> io::Result<()> {
         let client = self
             .0
@@ -556,13 +558,21 @@ impl FileMonitor {
         });
         let mut error = 0;
         // SAFETY: the Box's address is stable until the bridge drains and deletes the client.
-        let client =
-            unsafe { box_es_start((&mut *context as *mut Context).cast(), receive, &mut error) };
+        let (device, inode) = parent_identity()?;
+        let client = unsafe {
+            box_es_start(
+                (&mut *context as *mut Context).cast(),
+                receive,
+                &mut error,
+                device,
+                inode,
+            )
+        };
         if client.is_null() {
             return Err(startup_error(error));
         }
         eprintln!(
-            "macOS file enforcement ready: five authorization events; deadline failures deny"
+            "macOS file enforcement ready: five filesystem authorization events; deadline failures deny"
         );
         Ok(Self {
             registration: Registration(Arc::new(Mutex::new(Client(client)))),
@@ -589,8 +599,9 @@ pub(crate) fn preflight() -> Result<(), NativeFilesystemError> {
         false
     }
     let mut error = 0;
+    let (device, inode) = parent_identity()?;
     // SAFETY: this preflight callback borrows no context and always refuses authorization.
-    let client = unsafe { box_es_start(std::ptr::null_mut(), refuse, &mut error) };
+    let client = unsafe { box_es_start(std::ptr::null_mut(), refuse, &mut error, device, inode) };
     if client.is_null() {
         return Err(startup_error(error));
     }
@@ -601,6 +612,13 @@ pub(crate) fn preflight() -> Result<(), NativeFilesystemError> {
     } else {
         Err(NativeFilesystemError::Shutdown { code })
     }
+}
+
+fn parent_identity() -> Result<(u64, u64), NativeFilesystemError> {
+    let identity = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map_err(|source| NativeFilesystemError::BootstrapIdentity { source })?;
+    Ok((identity.dev(), identity.ino()))
 }
 
 impl FileMonitor {

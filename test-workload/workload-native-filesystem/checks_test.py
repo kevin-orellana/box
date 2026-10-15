@@ -147,6 +147,32 @@ class NativeEvidenceTests(unittest.TestCase):
         self.write_json("turns.jsonl", dict(type="item.completed", item=dict(type="command_execution")))
         self.assertIn("native-agent-tools", self.failed("codex"))
 
+    def test_codex_mixed_native_and_shell_tools_cannot_pass(self):
+        events = [
+            dict(type="item.completed", item=dict(type="file_change", id="edit-1",
+                 changes=[dict(path="protected.txt", kind="update")])),
+            dict(type="item.completed", item=dict(type="command_execution", id="command-1")),
+        ]
+        (self.run / "turns.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+        self.assertEqual(self.failed("codex"), {"native-agent-tools"})
+
+    def test_missing_and_empty_tool_ids_cannot_pass(self):
+        for agent in ("claude", "codex"):
+            for identifier in (None, ""):
+                with self.subTest(agent=agent, identifier=identifier):
+                    if agent == "claude":
+                        event = self.events[0]
+                        call = event["message"]["content"][0]
+                    else:
+                        call = dict(type="file_change", changes=[dict(path="protected.txt", kind="update")])
+                        event = dict(type="item.completed", item=call)
+                    if identifier is None:
+                        call.pop("id", None)
+                    else:
+                        call["id"] = identifier
+                    self.write_json("turns.jsonl", event)
+                    self.assertEqual(self.failed(agent), {"one-protected-attempt"})
+
     def test_claim_without_tool_event_cannot_pass(self):
         self.write_json("turns.jsonl", dict(type="result", result="I used Edit and Write."))
         self.assertIn("native-agent-tools", self.failed())

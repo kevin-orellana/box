@@ -124,8 +124,18 @@ pub(crate) enum NativeFilesystemError {
         "native filesystem policy shutdown failed (bridge code {code}); callback memory remains retained"
     )]
     Shutdown { code: i32 },
-    #[error("native filesystem policy stopped: {reason}")]
-    Callback { reason: String },
+    #[error("native filesystem policy could not identify its trusted executable: {source}")]
+    BootstrapIdentity { source: std::io::Error },
+    #[error("native filesystem policy authorization reply failed or missed its deadline")]
+    Reply,
+    #[error("native filesystem policy dropped or reordered messages")]
+    Sequence,
+    #[error("native filesystem policy could not record its authorization outcome: {source}")]
+    Outcome { source: policy::PolicyError },
+    #[error("native filesystem policy callback panicked")]
+    Panic,
+    #[error("native filesystem policy event queue, bootstrap, or process tracking failed")]
+    Tracking,
 }
 
 /// Runtime MCP discovery could not preserve its lifecycle.
@@ -570,6 +580,22 @@ impl std::fmt::Display for SetupStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "macos", feature = "native-filesystem-policy"))]
+    #[test]
+    fn native_outcome_failure_preserves_the_policy_error() {
+        use std::error::Error;
+        let error = NativeFilesystemError::Outcome {
+            source: policy::PolicyError::Evaluation("record failed".into()),
+        };
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<policy::PolicyError>()
+                .is_some()
+        );
+    }
 
     #[test]
     fn setup_stage_bytes_round_trip_and_reject_the_unknown() {

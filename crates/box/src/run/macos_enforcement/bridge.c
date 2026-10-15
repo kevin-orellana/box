@@ -33,7 +33,7 @@ typedef struct {
 typedef bool (*box_callback)(void *, const box_event *, int);
 typedef struct box_process {
     audit_token_t token;
-    bool mediated, root, registered;
+    bool mediated, root, registered, bootstrap;
     struct box_process *next;
 } box_process;
 
@@ -45,6 +45,7 @@ typedef struct {
     dispatch_group_t jobs;
     pthread_mutex_t processes_lock;
     box_process *processes;
+    uint64_t parent_dev, parent_ino, helper_dev, helper_ino;
     uint64_t sequence, delivered;
     bool has_sequence;
     _Atomic bool stopping, failed;
@@ -167,17 +168,27 @@ static bool same_process(audit_token_t a, audit_token_t b) {
         audit_token_to_pidversion(a) == audit_token_to_pidversion(b);
 }
 
-static bool process_mode(box_client *owner, audit_token_t token) {
+static bool executable_is(const es_file_t *file, uint64_t device, uint64_t inode) {
+    return file && inode && (uint32_t)file->stat.st_dev == device && file->stat.st_ino == inode;
+}
+
+static bool process_mode(box_client *owner, const es_process_t *process, bool *bootstrap) {
     bool mediated = true;
+    *bootstrap = process->ppid == getpid() &&
+        executable_is(process->executable, owner->parent_dev, owner->parent_ino);
     pthread_mutex_lock(&owner->processes_lock);
     for (box_process *entry = owner->processes; entry; entry = entry->next)
-        if (same_process(entry->token, token)) { mediated = entry->mediated; break; }
+        if (same_process(entry->token, process->audit_token)) {
+            mediated = entry->mediated;
+            *bootstrap = entry->bootstrap;
+            break;
+        }
     pthread_mutex_unlock(&owner->processes_lock);
     return mediated;
 }
 
 static void observe_process(box_client *owner, audit_token_t token, bool exited,
-                            bool mediated, bool root) {
+                            bool mediated, bool root, bool bootstrap, bool replaces) {
     pid_t pid = audit_token_to_pid(token);
     if (pid == getpid() || pid <= 0) return;
     pthread_mutex_lock(&owner->processes_lock);
@@ -190,11 +201,17 @@ static void observe_process(box_client *owner, audit_token_t token, bool exited,
             free(old);
         }
     } else {
+        // Late messages from the previous executable must not replace its successor.
+        if (*entry && !replaces && !same_process((*entry)->token, token)) {
+            pthread_mutex_unlock(&owner->processes_lock);
+            return;
+        }
         if (!*entry) *entry = calloc(1, sizeof(**entry));
         if (*entry) {
             (*entry)->token = token;
             (*entry)->mediated = mediated;
             (*entry)->root = root;
+            (*entry)->bootstrap = bootstrap;
         }
         if (!*entry || atomic_load(&owner->stopping)) {
             (void)proc_signal_with_audittoken(&token, SIGKILL);
@@ -216,14 +233,17 @@ static es_respond_result_t respond(es_client_t *client, const es_message_t *mess
 }
 
 static void receive(box_client *owner, es_client_t *client, const es_message_t *message) {
-    bool mediated = process_mode(owner, message->process->audit_token);
+    bool bootstrap = false;
+    bool mediated = process_mode(owner, message->process, &bootstrap);
     bool root = message->process->ppid == getpid();
     observe_process(owner, message->process->audit_token,
-                    message->event_type == ES_EVENT_TYPE_NOTIFY_EXIT, mediated, root);
-    if (message->event_type == ES_EVENT_TYPE_NOTIFY_FORK)
-        observe_process(owner, message->event.fork.child->audit_token, false, mediated, false);
+                    message->event_type == ES_EVENT_TYPE_NOTIFY_EXIT, mediated, root, bootstrap, false);
+    if (message->event_type == ES_EVENT_TYPE_NOTIFY_FORK) {
+        bool trusted_parent = audit_token_to_pid(message->process->audit_token) == getpid();
+        observe_process(owner, message->event.fork.child->audit_token, false, mediated, trusted_parent, trusted_parent, true);
+    }
     if (message->event_type == ES_EVENT_TYPE_NOTIFY_EXEC)
-        observe_process(owner, message->event.exec.target->audit_token, false, mediated, root);
+        observe_process(owner, message->event.exec.target->audit_token, false, mediated, root, bootstrap, true);
     box_event event = {0};
     event.phase = message->action_type == ES_ACTION_TYPE_AUTH ? BOX_AUTH : BOX_NOTIFY;
     event.pid = audit_token_to_pid(message->process->audit_token);
@@ -235,11 +255,32 @@ static void receive(box_client *owner, es_client_t *client, const es_message_t *
     owner->sequence = message->version >= 4 ? message->global_seq_num : 0;
     if (!consecutive) fail(owner, &event);
     event.valid = message->version >= 4 && decode(message, &event);
+    if (bootstrap && message->event_type == ES_EVENT_TYPE_NOTIFY_FORK) fail(owner, &event);
     if (atomic_load(&owner->stopping) || atomic_load(&owner->failed)) {
         if (event.phase == BOX_AUTH) (void)respond(client, message, event.flags, false);
         return;
     }
-    if (!mediated) {
+    if (message->event_type == ES_EVENT_TYPE_AUTH_EXEC) {
+        bool allowed = true;
+        if (bootstrap) {
+            pthread_mutex_lock(&owner->processes_lock);
+            allowed = false;
+            for (box_process *entry = owner->processes; entry; entry = entry->next) {
+                if (!same_process(entry->token, message->process->audit_token)) continue;
+                if (entry->registered) {
+                    entry->bootstrap = false;
+                    allowed = true;
+                } else {
+                    allowed = executable_is(message->event.exec.target->executable, owner->helper_dev, owner->helper_ino);
+                }
+                break;
+            }
+            pthread_mutex_unlock(&owner->processes_lock);
+        }
+        if (respond(client, message, 0, allowed) != ES_RESPOND_RESULT_SUCCESS || !allowed) fail(owner, &event);
+        return;
+    }
+    if (!mediated || bootstrap) {
         if (event.phase == BOX_AUTH) {
             uint32_t flags = message->event_type == ES_EVENT_TYPE_AUTH_OPEN ? message->event.open.fflag : 0;
             if (respond(client, message, flags, true) != ES_RESPOND_RESULT_SUCCESS) fail(owner, &event);
@@ -279,6 +320,7 @@ static void receive(box_client *owner, es_client_t *client, const es_message_t *
 static const es_event_type_t subscriptions[] = {
     ES_EVENT_TYPE_AUTH_OPEN, ES_EVENT_TYPE_AUTH_CREATE,
     ES_EVENT_TYPE_AUTH_UNLINK, ES_EVENT_TYPE_AUTH_RENAME, ES_EVENT_TYPE_AUTH_TRUNCATE,
+    ES_EVENT_TYPE_AUTH_EXEC,
     ES_EVENT_TYPE_NOTIFY_OPEN, ES_EVENT_TYPE_NOTIFY_CREATE,
     ES_EVENT_TYPE_NOTIFY_UNLINK, ES_EVENT_TYPE_NOTIFY_RENAME, ES_EVENT_TYPE_NOTIFY_TRUNCATE,
     ES_EVENT_TYPE_NOTIFY_FORK, ES_EVENT_TYPE_NOTIFY_EXEC, ES_EVENT_TYPE_NOTIFY_EXIT,
@@ -339,7 +381,7 @@ bool box_es_set_process_mode(void *raw, pid_t pid, bool mediated) {
         bool found = false;
         pthread_mutex_lock(&owner->processes_lock);
         for (box_process *entry = owner->processes; entry; entry = entry->next) {
-            if (audit_token_to_pid(entry->token) == pid && entry->root && !entry->registered) {
+            if (audit_token_to_pid(entry->token) == pid && entry->root && entry->bootstrap && !entry->registered) {
                 entry->mediated = mediated;
                 entry->registered = true;
                 found = true;
@@ -352,8 +394,18 @@ bool box_es_set_process_mode(void *raw, pid_t pid, bool mediated) {
     return false;
 }
 
+bool box_es_prepare_bootstrap(void *raw, uint64_t device, uint64_t inode) {
+    box_client *owner = raw;
+    pthread_mutex_lock(&owner->processes_lock);
+    bool valid = inode && !atomic_load(&owner->stopping) && !atomic_load(&owner->failed) &&
+        (!owner->helper_ino || (owner->helper_dev == device && owner->helper_ino == inode));
+    if (valid) { owner->helper_dev = device; owner->helper_ino = inode; }
+    pthread_mutex_unlock(&owner->processes_lock);
+    return valid;
+}
+
 /* Negative errors belong to this bridge. Positive errors are es_new_client_result_t. */
-void *box_es_start(void *context, box_callback callback, int *error) {
+void *box_es_start(void *context, box_callback callback, int *error, uint64_t parent_dev, uint64_t parent_ino) {
     *error = -1;
     if (__builtin_available(macOS 27.0, *)) {
         if (!proc_signal_with_audittoken) return NULL;
@@ -361,6 +413,8 @@ void *box_es_start(void *context, box_callback callback, int *error) {
         if (!owner) { *error = -2; return NULL; }
         owner->context = context;
         owner->callback = callback;
+        owner->parent_dev = parent_dev;
+        owner->parent_ino = parent_ino;
         owner->work = dispatch_queue_create("box.native-filesystem-policy", DISPATCH_QUEUE_SERIAL);
         owner->jobs = dispatch_group_create();
         if (pthread_mutex_init(&owner->processes_lock, NULL)) abort();
@@ -432,11 +486,14 @@ int box_es_stop(void *raw) {
 }
 
 #else
+bool box_es_prepare_bootstrap(void *raw, uint64_t device, uint64_t inode) { (void)raw; (void)device; (void)inode; return false; }
 bool box_es_set_process_mode(void *raw, pid_t pid, bool mediated) { (void)raw; (void)pid; (void)mediated; return false; }
 
-void *box_es_start(void *context, box_callback callback, int *error) {
+void *box_es_start(void *context, box_callback callback, int *error, uint64_t parent_dev, uint64_t parent_ino) {
     (void)context;
     (void)callback;
+    (void)parent_dev;
+    (void)parent_ino;
     *error = -5;
     return NULL;
 }
