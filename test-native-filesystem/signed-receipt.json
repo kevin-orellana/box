@@ -2,7 +2,7 @@
   "kind": "manual signed-run attestation; CI checks source freshness",
   "sources": {
     ".github/workflows/auto-strands-review.yml": "a8d99b8f452ba64c738df403031019845be248f53c0a65daedfc06d1b0acd5ba",
-    ".github/workflows/ci.yml": "453b862eccd4a37018de9ee35247a5e0f346383d6ef6b1b0e8cc73c05b783c1d",
+    ".github/workflows/ci.yml": "0c8290582e17bb37cee2fe698e4934d2134c851672ff4fdec0da632f9dfa1329",
     ".github/workflows/containment-deterministic.yml": "e61d7d4211b1946563c80871e4466aa761c5e6b04998565430d04b62cc891084",
     ".github/workflows/deploy-box-artifact.yml": "e69665bb39d580db510bf3ac9589f3152b4ba5805aab236a5d52ac33cf0b8a1a",
     ".github/workflows/full-tests.yml": "a0fba2f76f9ca781a6b32e94c51587232d917bbb14752a7cafc4e4f2d2f7aa7d",
@@ -10,7 +10,7 @@
     ".github/workflows/pr-title.yml": "7175cfd6f108ac5a776ad3066911b7b84be78ea899bb5553fa00e3782d61fec0",
     ".github/workflows/rust-test-lint.yml": "cfcbd33c6d87087587674c7d98cc782c8edd203d4d54aa764a6321659cbe48a3",
     ".github/workflows/strands-command.yml": "f25c01bd78eda9b160c8b67186147a54b36c4f585d10721cff16a553e6a2aebf",
-    ".github/workflows/verdict-hermetic.yml": "6511379b36139efd42cd0ad0b79f9079821ae75639d5f012153a01a4c9b18f4d",
+    ".github/workflows/verdict-hermetic.yml": "7e9582d58a52ba0f62754f7276bd862e3fe3942254bba97d34423af60684a415",
     ".github/workflows/workload-suite.yml": "827b196a83b544a7f20486f62f842b70d44a46faab9f9ec56a9782f43f52e0f3",
     "Cargo.lock": "9f1e8e4ef3a4ad8894d9ab8c5f084fbb3f49b229ceb2c0d82df71aa6dd0f0fa1",
     "Cargo.toml": "6c8120cd0443693539eeb9d54a9c9f877badd646062340244a14d70a5e2e0f1f",
@@ -444,6 +444,6 @@
   ],
   "signature_verified": true,
   "macos": "27.0.1",
-  "binary_sha256": "fc07f526b2e0ed9a1a1478f71c5610e2099fce99f66aae088b8c2f84b7701ff0",
-  "test_log_sha256": "01c1206cf5358a0dc733def504bafb69def2b3660b0026ee53e0cd48ffa558db"
+  "binary_sha256": "37eb5070fa31af0e8b2166dc62ce587b9b90c36027c6d28e09fd8f0168afa0fb",
+  "test_log_sha256": "3e48b93289db964e7ed5a884a2f6799658194d7e01e43090ca7630b1862dfcec"
 }
