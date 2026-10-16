@@ -159,3 +159,53 @@ Cargo supplies the workspace package list, including nested packages.
 Separate crate tests, examples, benchmarks, documentation, and unrelated workflows do not require a new signed run.
 The required native workflow also runs startup-refusal tests with and without the Cargo feature.
 
+
+## Run real-agent workloads
+
+Select `test-workload/workload-native-filesystem` explicitly. It is outside the default workload matrix.
+The case supports Claude Code and Codex on macOS 27 with a signed experimental build.
+It makes real model calls through the existing workload suite's Bedrock gateway configuration.
+The isolated workload home needs an AWS `default` profile with valid credentials and model access.
+Do not grant the agent access to that profile.
+
+Run from the repository root. Use a fresh run directory for each agent:
+
+```sh
+export WL_SRC="$(pwd -P)"
+export WL_HOME_DIR=/absolute/path/workload-home
+export WL_BOX_BINARY=/absolute/path/KernelBox.app/Contents/MacOS/strands-box
+export WL_CLAUDE_BINARY=/absolute/path/claude
+export WL_CODEX_BINARY=/absolute/path/codex
+export AWS_REGION=us-west-2
+export WL_CODEX_MODEL=your-enabled-mantle-model
+export WL_DIMENSION=workload-native-filesystem
+export WL_AGENT=claude
+export WL_RUN_DIR="$WL_HOME_DIR/runs/claude-native-1"
+mkdir -p "$WL_RUN_DIR"
+case_dir="$WL_SRC/test-workload/$WL_DIMENSION"
+bash "$case_dir/oracle.sh" start
+bash "$case_dir/agent-a.sh" "$WL_RUN_DIR" </dev/null
+bash "$case_dir/oracle.sh" stop
+bash "$case_dir/agent-b.sh" "$WL_RUN_DIR"
+cat "$WL_RUN_DIR/verdict.json"
+```
+
+Repeat with `WL_AGENT=codex` and a fresh `WL_RUN_DIR`.
+The explicit agent binary variables use existing installations.
+Without them, the suite resolves Claude and the Codex Node shim from its workload home.
+Keep the signed Box helpers beside `WL_BOX_BINARY`.
+
+The host checks require an allowed edit, byte-exact protected contents, and a later continuation write.
+They also require a native Dogwood denial and exact-path policy records.
+Claude must use its native file tools; Codex must emit file-change events without command execution.
+Missing evidence, failed model runs, and unsupported platforms cannot pass.
+These tests do not prove structured policy errors reach the agent or that every native tool works.
+
+Run the verdict regression tests without credentials or signing:
+
+```sh
+cargo test --manifest-path test-workload/verdict/Cargo.toml --locked --all-features
+python3 test-workload/workload-native-filesystem/generator_test.py
+```
+
+The existing verdict CI job runs these regression tests. Live model runs remain explicitly selected.

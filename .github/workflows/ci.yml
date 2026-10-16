@@ -60,6 +60,8 @@ jobs:
             verdict:
               - 'test-common/**/!(*.md)'
               - 'test-workload/verdict/**/!(*.md)'
+              - 'test-workload/common/**/!(*.md)'
+              - 'test-workload/workload-native-filesystem/**'
               - '.github/workflows/verdict-hermetic.yml'
               - '.github/workflows/ci.yml'
 
