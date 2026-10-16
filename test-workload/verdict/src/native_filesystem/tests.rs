@@ -140,6 +140,26 @@ fn formatted_json_documents_are_valid() {
 }
 
 #[test]
+fn journal_can_also_contain_traces_and_metrics() {
+    let f = Fixture::new();
+    let records = json!({"resourceLogs":[{"scopeLogs":[{"logRecords":f.journal}]}]});
+    f.records(
+        "decisions.jsonl",
+        &[
+            records.clone(),
+            json!({"resourceSpans":[]}),
+            json!({"resourceMetrics":[]}),
+        ],
+    );
+    assert!(f.fail("claude").is_empty());
+    f.records(
+        "decisions.jsonl",
+        &[records, json!({"resourceSpans":[], "resourceLogs":{}})],
+    );
+    assert!(f.fail("claude").contains("readable-decisions.jsonl"));
+}
+
+#[test]
 fn legacy_policy_attributes_cannot_supply_evidence() {
     for legacy_keys in [
         vec!["action", "resource", "verdict", "rule"],

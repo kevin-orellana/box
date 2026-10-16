@@ -161,6 +161,9 @@ fn mutates_file(decision: &test_common::Decision) -> bool {
 }
 
 fn journal_shape(value: &Value) -> bool {
+    if value.get("resourceLogs").is_none() {
+        return value["resourceSpans"].is_array() || value["resourceMetrics"].is_array();
+    }
     value["resourceLogs"].as_array().is_some_and(|resources| {
         resources.iter().all(|resource| {
             resource["scopeLogs"].as_array().is_some_and(|scopes| {
@@ -268,7 +271,10 @@ pub fn checks(run: &Path, agent: &str) -> Vec<Check> {
         "policy journal must contain log records with named attributes",
     );
     // Only reserved policy attributes can supply evidence for this workload.
-    for record in records.iter_mut().filter(|record| journal_shape(record)) {
+    for record in records
+        .iter_mut()
+        .filter(|record| journal_shape(record) && record.get("resourceLogs").is_some())
+    {
         for resource in record["resourceLogs"].as_array_mut().unwrap() {
             for scope in resource["scopeLogs"].as_array_mut().unwrap() {
                 for entry in scope["logRecords"].as_array_mut().unwrap() {
