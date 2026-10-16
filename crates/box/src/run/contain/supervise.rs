@@ -83,9 +83,11 @@ async fn spawn_registered(
                 return Err(error);
             }
         };
-        let result =
-            tokio::task::spawn_blocking(move || gate.release(|| registration.set_mode(pid, true)))
-                .await;
+        let mediated = boundary.native_filesystem_policy();
+        let result = tokio::task::spawn_blocking(move || {
+            gate.release(|| registration.set_mode(pid, mediated))
+        })
+        .await;
         let error = match result {
             Ok(Ok(())) => None,
             Ok(Err(error)) => Some(error.to_string()),
