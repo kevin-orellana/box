@@ -154,8 +154,8 @@ Each looks like a simplification and is not. If one is genuinely wanted, record 
   caller wanting determinism passes an absolute program path).
 
   **`tests/four_inputs.rs` is the guard.** It asserts both halves: no withheld flag is a box
-  argument, and `ConfigFile` carries exactly **eight** keys — `agent`, `box_dir`, `egress`, `mcp`,
-  `name`, `policy`, `telemetry`, and `tool`. That is the `box.toml` key set, and it is
+  argument, and `ConfigFile` carries exactly **nine** keys — `agent`, `box_dir`, `egress`, `mcp`,
+  `name`, `policy`, `telemetry`, `tool`, and `experimental-features`. That is the `box.toml` key set, and it is
   **not** the stored `Record`'s key set: `Record` adds `version` and `box_id`, which no operator
   authors. Read
   which one a passage means before you change a count. The withheld-flag guard is split in two —
@@ -236,9 +236,10 @@ Each looks like a simplification and is not. If one is genuinely wanted, record 
   about one box. **Do not reintroduce `--name`**; reconciling a flag against the file is the shape in
   which the file's key became silently dead once already.
 
-  **`box.toml` carries eight top-level keys — `name`, `box_dir`, `policy`, `[agent]`,
-  `[tool.<label>]`, `[egress.<name>]`, `[mcp.<name>]`, and `[telemetry.<kind>]`.** A ninth is a
-  fifth input until argued otherwise, the way `env` is argued above. `[agent]` and each
+  **`box.toml` carries nine top-level keys — `name`, `box_dir`, `policy`, `[agent]`,
+  `[tool.<label>]`, `[egress.<name>]`, `[mcp.<name>]`, `[telemetry.<kind>]`, and
+  `[experimental-features]`.** The experimental setting selects native file checks.
+  It adds no authority beyond the authored policy. `[agent]` and each
   `[tool.<label>]` hold one `ProcessSpec`, which is four fields — `command`, `workspace`, `env`,
   and `filesystem` — and `filesystem` holds the path lists: eight for `[agent]`, six
   for a `[tool.<label>]`, which has no `metadata` or `exec` list: a leaf discovers metadata across the

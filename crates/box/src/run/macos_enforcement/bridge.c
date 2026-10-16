@@ -97,7 +97,8 @@ static bool new_path(char *out, const es_file_t *directory, es_string_token_t le
 
 static bool source_file(box_event *out, const es_file_t *file, uint32_t identity) {
     if (!file) return false;
-    out->source_dev = (uint32_t)file->stat.st_dev;
+    // Match Rust MetadataExt::dev when the signed device number is negative.
+    out->source_dev = (uint64_t)file->stat.st_dev;
     out->source_ino = file->stat.st_ino;
     out->source_identity = identity;
     return file_path(out->path, file);
@@ -141,7 +142,7 @@ static bool decode(const es_message_t *message, box_event *out) {
             if (!source_file(out, event->source, BOX_FILE)) return false;
             if (event->destination_type == ES_DESTINATION_TYPE_EXISTING_FILE) {
                 out->destination_exists = 1;
-                out->destination_dev = (uint32_t)event->destination.existing_file->stat.st_dev;
+                out->destination_dev = (uint64_t)event->destination.existing_file->stat.st_dev;
                 out->destination_ino = event->destination.existing_file->stat.st_ino;
                 out->destination_mode = event->destination.existing_file->stat.st_mode;
                 out->destination_identity = BOX_FILE;
@@ -149,7 +150,7 @@ static bool decode(const es_message_t *message, box_event *out) {
             }
             if (event->destination_type != ES_DESTINATION_TYPE_NEW_PATH) return false;
             const es_file_t *parent = event->destination.new_path.dir;
-            out->destination_dev = (uint32_t)parent->stat.st_dev;
+            out->destination_dev = (uint64_t)parent->stat.st_dev;
             out->destination_ino = parent->stat.st_ino;
             out->destination_identity = BOX_PARENT;
             return new_path(out->destination, parent, event->destination.new_path.filename);
@@ -169,7 +170,7 @@ static bool same_process(audit_token_t a, audit_token_t b) {
 }
 
 static bool executable_is(const es_file_t *file, uint64_t device, uint64_t inode) {
-    return file && inode && (uint32_t)file->stat.st_dev == device && file->stat.st_ino == inode;
+    return file && inode && (uint64_t)file->stat.st_dev == device && file->stat.st_ino == inode;
 }
 
 static bool process_mode(box_client *owner, const es_process_t *process, bool *bootstrap) {

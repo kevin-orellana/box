@@ -51,11 +51,21 @@ def sources():
 
 def tests():
     return sorted(
-        re.findall(
-            r"#\[test\]\s+fn (\w+)\(",
-            (ROOT / "test-native-filesystem/tests/enforcement.rs").read_text(),
-        )
+        name
+        for path in (ROOT / "test-native-filesystem/tests").glob("*.rs")
+        for name in re.findall(r"#\[test\]\s+fn (\w+)\(", path.read_text())
     )
+
+
+def passed_tests(log, expected):
+    passed = sorted(re.findall(r"^test (\w+) \.\.\. ok$", log, re.MULTILINE))
+    totals = re.findall(
+        r"^test result: ok\. (\d+) passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;",
+        log, re.MULTILINE,
+    )
+    if passed != expected or sum(map(int, totals)) != len(expected) or "test result: FAILED" in log:
+        raise ValueError("The log does not show an unfiltered passing signed suite.")
+    return passed
 
 
 def verify(receipt, current_sources, expected_tests):
@@ -65,7 +75,10 @@ def verify(receipt, current_sources, expected_tests):
         raise ValueError("Signed native test receipt does not cover every test.")
     if receipt.get("signature_verified") is not True:
         raise ValueError("Signed native test receipt has no verified signature.")
-    if int(receipt.get("macos", "0").split(".")[0]) < 27:
+    version = receipt.get("macos")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version):
+        raise ValueError("Signed native test receipt has no usable macOS version.")
+    if int(version.split(".")[0]) < 27:
         raise ValueError("Signed native tests require macOS 27 or later.")
     if not re.fullmatch(r"[a-f0-9]{64}", receipt.get("binary_sha256", "")):
         raise ValueError("Signed native test receipt has no executable hash.")
@@ -88,11 +101,8 @@ def main():
         if json.loads(args.before.read_text()) != current:
             raise ValueError("Sources changed after the snapshot; rebuild and rerun.")
         log = args.record.read_text()
-        passed = sorted(re.findall(r"^test (\w+) \.\.\. ok$", log, re.MULTILINE))
         expected = tests()
-        summary = f"test result: ok. {len(expected)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"
-        if passed != expected or summary not in log or "test result: FAILED" in log:
-            raise ValueError("The log does not show an unfiltered passing signed suite.")
+        passed = passed_tests(log, expected)
         subprocess.run(
             ["codesign", "--verify", "--deep", "--strict", str(args.binary)],
             check=True,
