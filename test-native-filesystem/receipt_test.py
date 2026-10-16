@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from receipt import covered, verify
+from receipt import covered, passed_tests, verify
 
 
 class ReceiptTests(unittest.TestCase):
@@ -18,6 +18,29 @@ class ReceiptTests(unittest.TestCase):
 
     def test_complete_current_receipt_passes(self):
         verify(self.receipt, self.sources, self.tests)
+
+    def test_malformed_macos_version_has_a_clear_error(self):
+        for version in ("", None, 27, "macOS 27", "27.beta"):
+            with self.subTest(version=version):
+                receipt = {**self.receipt, "macos": version}
+                with self.assertRaisesRegex(ValueError, "no usable macOS version"):
+                    verify(receipt, self.sources, self.tests)
+
+    def test_log_must_cover_every_test_target(self):
+        first = "test bridge ... ok\n"
+        second = "test enforcement ... ok\n"
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"
+        complete = first + summary + second + summary
+        expected = ["bridge", "enforcement"]
+        self.assertEqual(passed_tests(complete, expected), expected)
+        for log in (
+            first + summary,
+            complete.replace("0 filtered out", "1 filtered out"),
+            complete + "test result: FAILED\n",
+            complete + second,
+        ):
+            with self.subTest(log=log), self.assertRaises(ValueError):
+                passed_tests(log, expected)
 
     def test_stale_missing_and_incomplete_evidence_fail(self):
         for field, value in (

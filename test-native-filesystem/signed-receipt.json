@@ -1,7 +1,7 @@
 {
   "kind": "manual signed-run attestation; CI checks source freshness",
   "sources": {
-    ".github/workflows/native-filesystem.yml": "90c7ce04a2a35723cae0be4796528cb3935a1bb07ba22044ead6863416e0ea1c",
+    ".github/workflows/native-filesystem.yml": "cec6e97bf648b2ad7629cb28fcfbc95f37b695532adfb6d09cb477c622f02a4a",
     "Cargo.lock": "9f1e8e4ef3a4ad8894d9ab8c5f084fbb3f49b229ceb2c0d82df71aa6dd0f0fa1",
     "Cargo.toml": "6c8120cd0443693539eeb9d54a9c9f877badd646062340244a14d70a5e2e0f1f",
     "crates/box/Cargo.toml": "40253bbedaca3b2c98a4809531a6b81bc33ae1d86a2a2a7d2705294500d6be28",
@@ -50,14 +50,14 @@
     "crates/box/src/run/contain/executable.rs": "0399cdaf2a18d739c4d40e5c859b5ced67dc88c01bf929ca24328898c187d1d9",
     "crates/box/src/run/contain/mod.rs": "72454949b710a0b6a407c62375d0e6d32c3c420f86e6a71e76f475a85b0a3a7b",
     "crates/box/src/run/contain/runtime_minimum.rs": "13e828c21ed827ef334a2d8869fc1387c1902a444359bb682e8590d4cd2ad482",
-    "crates/box/src/run/contain/supervise.rs": "2ac5dcc3b64166a7feb786f160b72125593aae3a0feeac75dead191b25c324da",
+    "crates/box/src/run/contain/supervise.rs": "f61f21ecb8860a4ad7c64fb48a726525bc4efcd11e7badb6388e8d6e4f65ceac",
     "crates/box/src/run/contain/terminal.rs": "068816a28666648b6b6f178969a10d25d8c88f2073cea6e34af4cb181c0cdeec",
     "crates/box/src/run/contain/trampoline.rs": "c16561dd6cfb85b197edeeb3bdd7c350d39c77cbb54b3753625ab1390c6171f1",
     "crates/box/src/run/credential.rs": "d8abac3eef711258a16c490c36ccce677f434bfaf142771977e65ff286c551b1",
     "crates/box/src/run/hardening.rs": "c0cfe8a5875033f721572d7a1cbdd40c7d84ce598a43ee12bf3affbdf94fa6ae",
     "crates/box/src/run/hosted.rs": "12d277e5d5d3942f7b95601638d5310736ea59eea082a4a7770c54eda8ec94e4",
     "crates/box/src/run/lock.rs": "fd0e656d3b71498211a085fdaefa2e817f5f52a9b061fe1fc0d42fa5a9a6e446",
-    "crates/box/src/run/macos_enforcement/bridge.c": "e888057ecf90f8abce7a15d6d7e0d8e70d4a3b0579e3da5f7ccd08904b941b77",
+    "crates/box/src/run/macos_enforcement/bridge.c": "d2de598e834a06c8f246e7ccb097f1ec00444152d85b060aeede7a21fc6f5ead",
     "crates/box/src/run/macos_enforcement/mod.rs": "aa31a3c5966c4bc42fd903b2e9e6de0237f25f8e283380354d7bdef0bc85d89c",
     "crates/box/src/run/macos_enforcement/tests.rs": "1dc96d8fe338d46f832366fe92cf92b241e26d37819e08556bd63c1c9abda80a",
     "crates/box/src/run/mod.rs": "936cb90a50d7ad98bda770ff72685d51fdd02649b7b7bbe538780fccaf097731",
@@ -278,13 +278,16 @@
     "rust-toolchain.toml": "7553618f800829444096beea3dce84c3d07585efda504c19adb6787369bbd9e8",
     "test-native-filesystem/Cargo.lock": "fb50171c3b6762d75b8a773f551340108094f978006bc218c528ce1b4613c203",
     "test-native-filesystem/Cargo.toml": "8436358c2288262062c86e2ef6ab962bc3e4543dc82be6220850f6eb25ac7003",
-    "test-native-filesystem/receipt.py": "12dc8e6fcd3a30d17f0fd28fabc4499b33c2d6750d386d16c6afc2d0dc24fb8d",
-    "test-native-filesystem/receipt_test.py": "a257f041a69bd8bc8d237817db645050532efb569deab2016689c0c6ab4e78ab",
+    "test-native-filesystem/receipt.py": "8d5eb9060bfcfd14ea992075cd34d608a2b59c4e9aeadc3462991e7a56a49865",
+    "test-native-filesystem/receipt_test.py": "5838400fed008a894948954100af7a287cc69818379f520829fceaa3cdd95721",
+    "test-native-filesystem/support/bridge_checks.c": "4443720471eb258e3563fb148034bbce91e06ee707c29cf1d2f0298f5e8278d7",
     "test-native-filesystem/support/macos_file_probe.c": "4d8cff259c106e193857c1e73ef921fbf89b7895c2b336d8c023a2c9085f3563",
+    "test-native-filesystem/tests/bridge.rs": "201939529d82c452b7f0809e86f21e19639d8cffd95bb9f19c0f6e9762bedb90",
     "test-native-filesystem/tests/enforcement.rs": "f90d4195d22cbc8069235794bc4f2a51c6fc55aa084a205467bf295ef2bd11c2"
   },
   "passed_tests": [
     "a_disabled_agent_retains_containment_and_does_not_record_native_history",
+    "bridge_denials_shutdown_errors_and_signed_device_ids",
     "containment_and_default_deny_remain_independent_restrictions",
     "direct_open_truncate_and_grandchild_obey_dogwood",
     "disabled_agent_starts_under_a_restrictive_bootstrap_policy",
@@ -308,6 +311,6 @@
   ],
   "signature_verified": true,
   "macos": "27.0.1",
-  "binary_sha256": "e438fd3f9fb77fa5604692b145ac196c518505f2bdb0c8e25ad8af8ce2f4a758",
-  "test_log_sha256": "ccf952d05ffa86b20f1d84985f1608da162f5792620137f92c68372a8ec1c4bf"
+  "binary_sha256": "86739c2053069c6d958c5f919c8e3990c8c305a9edf79b4141702730b7f32810",
+  "test_log_sha256": "f1356f199fb765b2922a1bdcae1bb2a2bf08745c41758e6e1368f99a3e08e0f2"
 }
