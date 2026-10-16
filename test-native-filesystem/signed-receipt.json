@@ -5,7 +5,9 @@
     "Cargo.lock": "9f1e8e4ef3a4ad8894d9ab8c5f084fbb3f49b229ceb2c0d82df71aa6dd0f0fa1",
     "Cargo.toml": "6c8120cd0443693539eeb9d54a9c9f877badd646062340244a14d70a5e2e0f1f",
     "crates/box/Cargo.toml": "40253bbedaca3b2c98a4809531a6b81bc33ae1d86a2a2a7d2705294500d6be28",
-    "crates/box/build.rs": "d37a3f8489e0ddaed2c62746bc9127e9a7d598dcf42b69ea6aeab93e762b8672",
+    "crates/box/Info-sock-alias.plist": "8349f3d6292dc29b8258dbe48fcb45c9079824303ab9da433ddc6f553dfe4439",
+    "crates/box/Info.plist": "ce6c25625bf8d0b868cd30da04252a7b01816d60a0c70310d5201f805c1857e9",
+    "crates/box/build.rs": "639b53edae76f745395dd16cb614da3def938a8c729bf07ea3114c362bdb3d86",
     "crates/box/src/bin/strands-box-sock-alias.rs": "d259fc684f8bc136d6ae86291a42c5dcb272a624e2ace8ebc43454d27c81de04",
     "crates/box/src/command/cli.rs": "e607fd40b025f4d507018eea238ab06c2ad78fbb9fe684c9ad4fd4242664a2d0",
     "crates/box/src/command/mod.rs": "b5be99c46c498b9ec04a870e34877901afaef57b8420638251b31630e68484db",
@@ -66,6 +68,8 @@
     "crates/box/src/test_support.rs": "9bd74995afa9428167b2733079ead90c1a5d17c3acb172a4de0d0efedf22e5a0",
     "crates/box/tests/support/bounded_output.rs": "5fd13f5c67f16c0d189cc290759f8bed15646f498a91d04d391c17bc06d70ed0",
     "crates/containment/Cargo.toml": "41cc6104628b7ff6ac1fe3cbe5b1cd6fdd8ee91bd03de188142a8b408d2f6578",
+    "crates/containment/Info.plist": "1d232e498875b9ba5942c15f3ae8c7f5865e8850545229852c839b8c58c5cacb",
+    "crates/containment/build.rs": "ef79334fefe81ecd8e5a99ff6e60ba23070d7074e25d019bff14159508b394ff",
     "crates/containment/src/backend/linux/mod.rs": "da8c865a987606f9bb427a089cb34a5d82a1ccf55dd59154f115dd355f37ba92",
     "crates/containment/src/backend/linux/namespace/authority.rs": "cbd4516fe26dfa5fcf7d7befcbbe548643561c1b69c9c3627d0541933341a202",
     "crates/containment/src/backend/linux/namespace/mod.rs": "7c0e65a7682dad788e6a57eb9e27981a70c5a8f02565347ad2837c2b0122cc89",
@@ -311,6 +315,6 @@
   ],
   "signature_verified": true,
   "macos": "27.0.1",
-  "binary_sha256": "86739c2053069c6d958c5f919c8e3990c8c305a9edf79b4141702730b7f32810",
-  "test_log_sha256": "f1356f199fb765b2922a1bdcae1bb2a2bf08745c41758e6e1368f99a3e08e0f2"
+  "binary_sha256": "8b6f0e18895acbec4afd305785455cc1b29e72f9e52841a0fb3c954a6972f1d9",
+  "test_log_sha256": "15a95b8b8dc76f680d01691fdeff9ea7fc31cb5e6a830e21da659faa29d73fc3"
 }
