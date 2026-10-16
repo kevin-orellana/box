@@ -63,6 +63,7 @@ pub mod checks;
 /// `Check`/journal machinery but keeps its own outcome vocabulary, because
 /// "the agent failed its mission" and "the box was escaped" are different questions.
 pub mod jailbreak;
+pub mod native_filesystem;
 pub mod reconcile;
 
 /// Truncate to at most `max` bytes without splitting a UTF-8 codepoint.

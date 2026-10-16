@@ -39,7 +39,8 @@ EOF
 }
 
 wl_checks() {
-  python3 "$WL_SRC/test-workload/workload-native-filesystem/checks.py" \
-    "$WL_RUN_DIR" "$WL_AGENT" >> "$WL_CHECKS_FILE" \
+  cargo run --manifest-path "$WL_SRC/test-workload/verdict/Cargo.toml" \
+    --locked --release --all-features --quiet --bin workload-oracle \
+    -- native-filesystem "$WL_RUN_DIR" "$WL_AGENT" >> "$WL_CHECKS_FILE" \
     || wl_check native-evidence-readable 0 "native evidence checker failed"
 }

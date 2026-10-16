@@ -204,7 +204,8 @@ These tests do not prove structured policy errors reach the agent or that every 
 Run the verdict regression tests without credentials or signing:
 
 ```sh
-python3 test-workload/workload-native-filesystem/checks_test.py
+cargo test --manifest-path test-workload/verdict/Cargo.toml --locked --all-features
+python3 test-workload/workload-native-filesystem/generator_test.py
 ```
 
 The existing verdict CI job runs these regression tests. Live model runs remain explicitly selected.

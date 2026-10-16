@@ -35,6 +35,22 @@ use workload_verdict::{Cli, Oracle, checks, jailbreak, reconcile};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The Bash oracle scores these rows; success here means the checks completed.
+    if args
+        .first()
+        .is_some_and(|argument| argument == "native-filesystem")
+    {
+        let [_, run, agent] = args.as_slice() else {
+            return usage("native-filesystem needs RUN_DIRECTORY and AGENT");
+        };
+        for check in workload_verdict::native_filesystem::checks(Path::new(run), agent) {
+            match serde_json::to_string(&check) {
+                Ok(line) => println!("{line}"),
+                Err(error) => return usage(&format!("cannot serialize check: {error}")),
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
     if args.first().is_some_and(|a| a == "jailbreak") {
         return ExitCode::from(jailbreak::command(&args[1..]));
     }
@@ -244,6 +260,7 @@ fn usage(why: &str) -> ExitCode {
   workload-oracle start     --run-dir DIR
   workload-oracle stop      --run-dir DIR --dimension NAME --cli NAME [--platform NAME]
   workload-oracle reconcile --run-dir DIR --dimension NAME --cli NAME [--platform NAME]
+  workload-oracle native-filesystem RUN_DIRECTORY AGENT
 
   start      truncate the decision journal and prepare the oracle directory
   stop       run the dimension's host checks, write oracle/verdict.json
